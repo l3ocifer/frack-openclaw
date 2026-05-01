@@ -177,7 +177,7 @@ curl -u "$STRIPE_API_KEY_RO:" \
 | `github` | gh CLI for issues/PRs |
 | `repo-creator` | Spinning up new business repos (rare, requires `:y`) |
 | `infrastructure-deployer` | NOT TYPICALLY USED — defer to Frick |
-| `1password` | `op read` for ad-hoc secret lookups |
+| `1password` (Vaultwarden adapter) | `bw get item` for ad-hoc secret lookups against `https://warden.leopaska.xyz`. Skill name is historical — implementation talks to Vaultwarden, not 1Password. |
 | `obsidian` | Cross-graph reads via Logseq markdown |
 | `commit-helper`, `test-generator`, `adr-generator` | When dictating from Leo |
 | `slack` | DISABLED for production Slack — only on personal workspaces if Leo enables |

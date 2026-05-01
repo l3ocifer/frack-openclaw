@@ -50,7 +50,7 @@ spec:
         fsGroup: 0
       containers:
         - name: openclaw
-          image: ghcr.io/l3ocifer/frack-openclaw:latest
+          image: ghcr.io/l3ocifer/frack-openclaw:homelab
           imagePullPolicy: Always
           command: ["openclaw"]
           args:

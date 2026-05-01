@@ -28,21 +28,27 @@ RUN corepack enable
 
 WORKDIR /app
 
-# Copy lockfiles + workspace manifests first to maximize layer cache
+# Copy lockfiles + workspace manifests first to maximize layer cache.
+# Upstream's preinstall scripts and pnpm `patchedDependencies` resolve at
+# install-time, so we must COPY everything pnpm peeks at BEFORE running
+# `pnpm install`: workspace manifests, ui/package.json, patches/, scripts
+# referenced by package.json's preinstall/postinstall hooks, and openclaw.mjs
+# (declared as bin in package.json).
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml* tsconfig*.json* ./
 COPY .npmrc .npmrc
+COPY openclaw.mjs ./
+COPY ui/package.json ./ui/package.json
+COPY patches ./patches
+COPY scripts ./scripts
 
-# Pnpm install — mirrors upstream's install step. If upstream gains
-# additional workspace globs, sync via the upstream-sync workflow.
 RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
+    NODE_OPTIONS=--max-old-space-size=2048 \
     pnpm install --frozen-lockfile --prod=false
 
-# Copy the rest of the source. We exclude homelab/ via .dockerignore
-# so the cache key for source-only changes stays clean.
 COPY . .
 
-# Build dist/ — `pnpm build` is upstream's canonical task
-RUN pnpm build && pnpm ui:build || true
+RUN pnpm build:docker || pnpm build || true
+RUN pnpm ui:build || true
 
 # ─── Stage 2: runtime ────────────────────────────────────────────────
 FROM node:24-bookworm-slim

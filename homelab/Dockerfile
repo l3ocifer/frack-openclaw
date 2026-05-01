@@ -85,22 +85,24 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 RUN curl -sL https://github.com/stripe/stripe-cli/releases/download/v1.21.8/stripe_1.21.8_linux_x86_64.tar.gz \
       | tar -xz -C /usr/local/bin stripe
 
-# Copy built openclaw from the build stage
-COPY --from=build /app/dist                /opt/openclaw/dist
-COPY --from=build /app/node_modules        /opt/openclaw/node_modules
-COPY --from=build /app/package.json        /opt/openclaw/package.json
-COPY --from=build /app/bin                 /opt/openclaw/bin
-RUN ln -sf /opt/openclaw/bin/openclaw /usr/local/bin/openclaw \
- && chmod +x /opt/openclaw/bin/openclaw
+# Copy built openclaw from the build stage. Upstream's binary is the
+# bundled openclaw.mjs at the repo root; there is no compiled bin/ dir.
+COPY --from=build /app/dist          /opt/openclaw/dist
+COPY --from=build /app/node_modules  /opt/openclaw/node_modules
+COPY --from=build /app/package.json  /opt/openclaw/package.json
+COPY --from=build /app/openclaw.mjs  /opt/openclaw/openclaw.mjs
+COPY --from=build /app/skills        /opt/openclaw/skills
+RUN ln -sf /opt/openclaw/openclaw.mjs /usr/local/bin/openclaw \
+ && chmod 755 /opt/openclaw/openclaw.mjs
 
 # Workspace skeleton — overlaid by mounted ConfigMaps + PVC at runtime
-WORKDIR /root
+WORKDIR /opt/openclaw
 RUN mkdir -p /root/.openclaw/workspace /root/.openclaw/skills /data
 
 EXPOSE 18789
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-  CMD curl -fsS http://localhost:18789/health || exit 1
+  CMD curl -fsS http://localhost:18789/healthz || exit 1
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["openclaw", "gateway", "wake", "--foreground", "--port=18789", "--bind=0.0.0.0"]
+CMD ["node", "/opt/openclaw/openclaw.mjs", "gateway", "--bind", "lan", "--port", "18789", "--allow-unconfigured"]

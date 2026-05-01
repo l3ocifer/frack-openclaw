@@ -1,0 +1,151 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frack
+  namespace: agents-shared
+  labels:
+    app.kubernetes.io/name: frack
+    app.kubernetes.io/component: agent
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # state PVC is RWO; only one pod can mount at a time
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: frack
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: frack
+        app.kubernetes.io/component: agent
+      annotations:
+        kustomize.toolkit.fluxcd.io/reconcile: enabled
+    spec:
+      # ── Scheduling ─────────────────────────────────────────────────
+      # NO hard nodeSelector — Frack floats. Soft preference for
+      # `thebeast` because the businesses workload is heaviest and
+      # thebeast has the most headroom + the production-app namespaces
+      # Frack operates against are pinned there. The scheduler is
+      # free to land Frack on alef when thebeast is drained / cordoned.
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 80
+              preference:
+                matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values: [thebeast]
+            - weight: 20
+              preference:
+                matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values: [alef]
+      serviceAccountName: frack-ops
+      restartPolicy: Always
+      securityContext:
+        runAsNonRoot: false  # OpenClaw expects /root/.openclaw
+        fsGroup: 0
+      containers:
+        - name: openclaw
+          image: ghcr.io/l3ocifer/frack-openclaw:latest
+          imagePullPolicy: Always
+          command: ["openclaw"]
+          args:
+            - "gateway"
+            - "wake"
+            - "--foreground"
+            - "--port=18789"
+            - "--bind=0.0.0.0"
+          env:
+            - name: AGENT_NAME
+              value: "Frack"
+            - name: AGENT_ID
+              value: "frack"
+            - name: OPENCLAW_CONFIG
+              value: "/root/.openclaw/openclaw.json"
+            - name: OPENCLAW_WORKSPACE
+              value: "/root/.openclaw/workspace"
+            - name: TZ
+              value: "America/New_York"
+            - name: HARDSTOP_PATH
+              value: "/data/HARDSTOP-FRACK"
+          envFrom:
+            - secretRef:
+                name: frack-secrets
+          ports:
+            - name: gateway
+              containerPort: 18789
+              protocol: TCP
+            - name: metrics
+              containerPort: 9100
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: gateway
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: gateway
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "2Gi"
+            limits:
+              memory: "8Gi"
+          volumeMounts:
+            - name: state
+              mountPath: /root/.openclaw
+              subPath: openclaw
+            - name: state
+              mountPath: /data
+              subPath: hardstop
+            - name: persona
+              mountPath: /root/.openclaw/workspace
+              readOnly: true
+            - name: openclaw-config
+              mountPath: /root/.openclaw/openclaw.json
+              subPath: openclaw.json
+              readOnly: true
+            - name: skills
+              mountPath: /root/.openclaw/skills
+              readOnly: true
+            # ── Longhorn-RWX graph mounts ──────────────────────────────
+            # Same five PVCs Vetinari + Sancho + syncthing-graphs mount.
+            # Frack RW on its own; restricted-write on Leo's; RO on the
+            # other three siblings'. Per-file write enforcement at the
+            # OpenClaw runtime layer (memorySearch.writableGraphs in
+            # openclaw.json — see openclaw-configs/frack/openclaw.json).
+            - { name: graph-frack,    mountPath: /data/graphs/frack }
+            - { name: graph-frick,    mountPath: /data/graphs/frick,    readOnly: true }
+            - { name: graph-sancho,   mountPath: /data/graphs/sancho,   readOnly: true }
+            - { name: graph-vetinari, mountPath: /data/graphs/vetinari, readOnly: true }
+            - { name: graph-quirm,    mountPath: /data/graphs/quirm,    readOnly: true }
+            - { name: graph-vimes,    mountPath: /data/graphs/vimes,    readOnly: true }
+            - { name: graph-puck,     mountPath: /data/graphs/puck,     readOnly: true }
+            - { name: graph-leo,      mountPath: /data/graphs/leo }
+              # NOT readOnly — Frack writes to pages/world/businesses.md
+              # and pages/world/open-loops.md per HANDOFF.md §4.
+      volumes:
+        - { name: state,           persistentVolumeClaim: { claimName: frack-state } }
+        - { name: persona,         configMap: { name: frack-persona } }
+        - { name: openclaw-config, configMap: { name: frack-openclaw-config } }
+        - { name: skills,          configMap: { name: frack-skills, optional: true } }
+        - { name: graph-frack,     persistentVolumeClaim: { claimName: frack-graph } }
+        - { name: graph-frick,     persistentVolumeClaim: { claimName: frick-graph } }
+        - { name: graph-sancho,    persistentVolumeClaim: { claimName: sancho-graph } }
+        - { name: graph-vetinari,  persistentVolumeClaim: { claimName: vetinari-graph } }
+        - { name: graph-quirm,     persistentVolumeClaim: { claimName: quirm-graph } }
+        - { name: graph-vimes,     persistentVolumeClaim: { claimName: vimes-graph } }
+        - { name: graph-puck,      persistentVolumeClaim: { claimName: puck-graph } }
+        - { name: graph-leo,       persistentVolumeClaim: { claimName: leo-graph } }
+      imagePullSecrets:
+        - name: ghcr-credentials

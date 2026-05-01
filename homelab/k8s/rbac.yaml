@@ -1,0 +1,303 @@
+---
+# Frack's ServiceAccount — used by the pod to authenticate with kubectl
+# against the business app namespaces.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: frack-ops
+  namespace: frack
+
+---
+# Frack's own namespace — full control (it's its own house).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: frack-self
+  namespace: frack
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/exec", "configmaps", "secrets", "events"]
+    verbs: ["get", "list", "watch", "create", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch", "patch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: frack-self
+  namespace: frack
+subjects:
+  - kind: ServiceAccount
+    name: frack-ops
+    namespace: frack
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: frack-self
+
+---
+# ─────────────────────────────────────────────────────────────────────
+# Business app namespace bindings.
+# Frack gets the same Role (defined once below) replicated across
+# every business app namespace via RoleBinding. The Role is namespace-
+# scoped (no ClusterRole) so we instantiate it per-namespace.
+# ─────────────────────────────────────────────────────────────────────
+
+---
+# Reusable Role — instantiate in each business namespace below.
+# (k8s requires the Role to exist in each namespace; we duplicate
+# the spec below per namespace for clarity.)
+# Role definition is the same in every namespace:
+#   • read everything except secrets
+#   • restart pods
+#   • shell into pods
+#   • NO delete on pvc/deployment/secret/configmap/service/ingress
+
+# potluck
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: frack-business-ops
+  namespace: potluck
+rules: &businessOpsRules
+  - apiGroups: [""]
+    resources: ["pods", "events", "services", "configmaps", "endpoints"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["delete"]  # rolling restart only (pods are cattle)
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "statefulsets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["traefik.io"]
+    resources: ["ingressroutes", "middlewares"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: frack-business-ops
+  namespace: potluck
+subjects: &frackOpsSubject
+  - kind: ServiceAccount
+    name: frack-ops
+    namespace: frack
+roleRef: &businessOpsRoleRef
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: frack-business-ops
+
+---
+# blink-platform
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: frack-business-ops
+  namespace: blink-platform
+rules: *businessOpsRules
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: frack-business-ops
+  namespace: blink-platform
+subjects: *frackOpsSubject
+roleRef: *businessOpsRoleRef
+
+---
+# ursulai
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: frack-business-ops
+  namespace: ursulai
+rules: *businessOpsRules
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: frack-business-ops
+  namespace: ursulai
+subjects: *frackOpsSubject
+roleRef: *businessOpsRoleRef
+
+---
+# omnilemma
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: frack-business-ops
+  namespace: omnilemma
+rules: *businessOpsRules
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: frack-business-ops
+  namespace: omnilemma
+subjects: *frackOpsSubject
+roleRef: *businessOpsRoleRef
+
+---
+# hyvapaska
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: frack-business-ops
+  namespace: hyvapaska
+rules: *businessOpsRules
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: frack-business-ops
+  namespace: hyvapaska
+subjects: *frackOpsSubject
+roleRef: *businessOpsRoleRef
+
+---
+# githired
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: frack-business-ops
+  namespace: githired
+rules: *businessOpsRules
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: frack-business-ops
+  namespace: githired
+subjects: *frackOpsSubject
+roleRef: *businessOpsRoleRef
+
+---
+# chimera
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: frack-business-ops
+  namespace: chimera
+rules: *businessOpsRules
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: frack-business-ops
+  namespace: chimera
+subjects: *frackOpsSubject
+roleRef: *businessOpsRoleRef
+
+---
+# ae
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: frack-business-ops
+  namespace: ae
+rules: *businessOpsRules
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: frack-business-ops
+  namespace: ae
+subjects: *frackOpsSubject
+roleRef: *businessOpsRoleRef
+
+---
+# lunasea
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: frack-business-ops
+  namespace: lunasea
+rules: *businessOpsRules
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: frack-business-ops
+  namespace: lunasea
+subjects: *frackOpsSubject
+roleRef: *businessOpsRoleRef
+
+---
+# authorworks
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: frack-business-ops
+  namespace: authorworks
+rules: *businessOpsRules
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: frack-business-ops
+  namespace: authorworks
+subjects: *frackOpsSubject
+roleRef: *businessOpsRoleRef
+
+---
+# trade
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: frack-business-ops
+  namespace: trade
+rules: *businessOpsRules
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: frack-business-ops
+  namespace: trade
+subjects: *frackOpsSubject
+roleRef: *businessOpsRoleRef
+
+---
+# Cluster-wide read-only (apps + nodes only) for whole-cluster
+# observability — but nothing destructive.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: frack-cluster-readonly
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications", "applicationsets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["nodes", "namespaces"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["nodes", "pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: frack-cluster-readonly
+subjects:
+  - kind: ServiceAccount
+    name: frack-ops
+    namespace: frack
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: frack-cluster-readonly

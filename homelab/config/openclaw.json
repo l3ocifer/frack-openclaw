@@ -1,0 +1,252 @@
+{
+  // OpenClaw config for Frack — cluster-resident on `thebeast`.
+  // The business operator. Runs the 12 production apps + customer
+  // ops + social + finance.
+  //
+  // Was previously laptop-resident (M1 Max). 2026-04-30 migrated to
+  // a Deployment in the K3s cluster scheduled to thebeast.
+  // The MacBook keeps `openclaw` installed as a thin client only.
+
+  models: {
+    mode: "merge",
+    providers: {
+      litellm: {
+        baseUrl: "http://litellm.ai.svc.cluster.local:4000/v1",
+        apiKeyEnv: "LITELLM_API_KEY",  // sealed in frack-secrets
+        api: "openai-completions",
+        models: [
+          {
+            id: "chat",
+            name: "LiteLLM chat (qwen2.5-coder:32b via vllm-chat)",
+            reasoning: false,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            contextWindow: 32768,
+            maxTokens: 8192,
+          },
+          {
+            id: "code",
+            name: "LiteLLM code (falls through to chat until vllm-coder unparked)",
+            reasoning: false,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            contextWindow: 32768,
+            maxTokens: 8192,
+          },
+          {
+            id: "long",
+            name: "LiteLLM long (falls through to chat until vllm-long unparked)",
+            reasoning: false,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            contextWindow: 131072,
+            maxTokens: 8192,
+          },
+          {
+            id: "embed",
+            name: "LiteLLM embed (tei-embed)",
+            reasoning: false,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            contextWindow: 8192,
+            maxTokens: 0,
+          },
+          {
+            id: "rerank",
+            name: "LiteLLM rerank (tei-rerank)",
+            reasoning: false,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            contextWindow: 8192,
+            maxTokens: 0,
+          }
+        ]
+      },
+      // Ollama on thebeast — direct fallback when LiteLLM is unhealthy.
+      // The pod can reach the host via the K3s host network or the
+      // explicit nodeSelector + hostNetwork pair (TBD on best path).
+      ollama: {
+        baseUrl: "http://thebeast.local:11434/v1",
+        apiKey: "ollama-local",
+        api: "openai-completions",
+        models: [
+          {
+            id: "qwen3-coder:30b",
+            name: "Qwen3 Coder 30B (MoE) — local fallback",
+            reasoning: false,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            contextWindow: 262144,
+            maxTokens: 8192,
+          }
+        ]
+      }
+    }
+  },
+
+  agents: {
+    defaults: {
+      model: {
+        primary: "litellm/chat",
+        fallbacks: ["litellm/long", "ollama/qwen3-coder:30b"],
+      },
+      workspace: "/root/.openclaw/workspace",
+      compaction: { mode: "safeguard" },
+      contextPruning: { mode: "cache-ttl", ttl: "1h" },
+      maxConcurrent: 4,
+      thinkingDefault: "low",
+      heartbeat: {
+        every: "30m",
+        offsetMinutes: 10,  // :10 and :40 to avoid Frick (:00 :30) and Sancho (:20 :50)
+        target: "last",
+      },
+      memorySearch: {
+        enabled: true,
+        sources: ["memory", "sessions"],
+        // Multi-graph: own graph (RW), Leo's PKM (R+restricted W),
+        // siblings R-only. Mounted via hostPath on thebeast (per
+        // host-side Syncthing setup — see scripts/agents/setup-host-syncthing.sh).
+        extraPaths: [
+          "/srv/graphs/frack/pages/ai-memory",
+          "/srv/graphs/frack/journals",
+          "/srv/graphs/frack/pages",
+          "/srv/graphs/leo/pages",
+          "/srv/graphs/leo/journals",
+          "/srv/graphs/frick/pages/ai-memory",
+          "/srv/graphs/frick/journals",
+          "/srv/graphs/sancho/pages/ai-memory",
+          "/srv/graphs/sancho/journals",
+        ],
+        provider: "litellm",
+        litellm: {
+          embedModel: "embed",
+          rerankModel: "rerank",
+        },
+        fallback: "local",
+        local: {
+          modelPath: "hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf",
+        },
+        // Postgres pgvector backing store (via DATABASE_URL secret)
+        store: {
+          backend: "postgres-pgvector",
+          urlEnv: "DATABASE_URL",
+          schema: "frack_memory",
+        },
+        sync: {
+          watch: true,
+          watchDebounceMs: 2000,
+          onSessionStart: true,
+          onSearch: true,
+        },
+        query: {
+          hybrid: {
+            enabled: true,
+            vectorWeight: 0.7,
+            textWeight: 0.3,
+          },
+        },
+      },
+    },
+    list: [
+      {
+        id: "main",
+        default: true,
+        identity: {
+          name: "Frack",
+          theme: "business operator — runs the 12 production apps + customer ops + social + finance",
+          emoji: "💼",
+        },
+      }
+    ],
+  },
+
+  tools: {
+    profile: "ops",  // was "coding" — Frack now operates production
+    allow: ["read", "exec", "write", "edit", "web_search", "browser"],
+    exec: {
+      host: "gateway",
+      // ASK MODE flipped from "off" to "on" — Frack acts on production.
+      // KILLSWITCH-gated tools (kubectl_delete on protected resources,
+      // git_push, send_external_email, stripe_charge, stripe_refund,
+      // postiz_publish) require explicit `:y` from Leo.
+      ask: "on",
+      security: "high",
+    },
+    // Per-tool confirmation gating (matches KILLSWITCH §4)
+    confirm: [
+      "external_email",
+      "external_post",
+      "stripe_charge",
+      "stripe_refund",
+      "stripe_subscription_modify",
+      "github_push",
+      "github_pr_merge",
+      "kubectl_delete_pvc",
+      "kubectl_delete_deployment",
+      "kubectl_delete_secret",
+      "kubectl_delete_configmap",
+      "kubectl_delete_namespace",
+      "vaultwarden_delete",
+      "postiz_publish",
+    ],
+  },
+
+  skills: {
+    load: {
+      // Mounted from unified-ai-configs/skills/ via the frack-skills ConfigMap
+      extraDirs: ["/root/.openclaw/skills"],
+    },
+  },
+
+  gateway: {
+    mode: "headless",  // was "local" — now runs in foreground inside the pod
+    port: 18789,
+    bind: "0.0.0.0",   // expose on Service; Authelia in front
+  },
+
+  // Channels — populated from sealed `frack-secrets` env vars
+  channels: {
+    matrix: {
+      enabled: true,
+      homeserver: "https://conduit.leopaska.xyz",
+      userId: "@frack:leopaska.xyz",
+      accessTokenEnv: "MATRIX_ACCESS_TOKEN",
+      defaultRoom: "!homelab:leopaska.xyz",
+    },
+    telegram: {
+      enabled: true,
+      botTokenEnv: "TELEGRAM_BOT_TOKEN",
+      prefix: "/frack",
+    },
+    imessage: {
+      enabled: true,
+      type: "bluebubbles-proxy",
+      baseUrl: "http://bluebubbles-proxy.agents-shared.svc.cluster.local:8080",
+      apiKeyEnv: "BLUEBUBBLES_API_KEY",
+      webhookPath: "/imessage/frack",
+    },
+    ntfy: {
+      enabled: true,
+      outboundOnly: true,
+      topicUrl: "https://ntfy.leopaska.xyz/frack",
+      bearerTokenEnv: "NTFY_TOKEN",
+    },
+  },
+
+  // Hard-kill sentinel (matches KILLSWITCH §3)
+  hardKill: {
+    sentinelPath: "/data/HARDSTOP-FRACK",
+    pollIntervalSeconds: 30,
+    onTrigger: "graceful_exit",
+  },
+
+  // Quiet hours (matches KILLSWITCH §2)
+  quietHours: {
+    enabled: true,
+    window: "23:00-07:00",
+    timezone: "America/New_York",
+    suppressOutbound: ["imessage", "ntfy", "telegram"],
+    allowOutboundOnP0: true,
+    allowInboundAlways: true,
+  },
+}

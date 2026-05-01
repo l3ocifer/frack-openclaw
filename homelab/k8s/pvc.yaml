@@ -1,0 +1,20 @@
+---
+# OpenClaw runtime state — sessions, skills cache, workspace memory.
+# RWO on longhorn-single (1-replica). The pod floats; Longhorn block-
+# attaches the volume on whichever node lands the pod. Canonical
+# memory lives in Postgres `openclaw_frack` (sealed DATABASE_URL),
+# so a 1-replica state volume is acceptable.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: frack-state
+  namespace: agents-shared
+  labels:
+    app.kubernetes.io/name: frack
+    app.kubernetes.io/component: agent-state
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: longhorn-single
+  resources:
+    requests:
+      storage: 5Gi

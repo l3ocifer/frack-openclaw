@@ -1,0 +1,40 @@
+---
+# Traefik IngressRoute — exposes Frack at frack.leopaska.xyz with
+# Authelia in front (per home-services.yaml convention).
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: frack
+  namespace: agents-shared
+spec:
+  entryPoints: [websecure]
+  routes:
+    - match: Host(`frack.leopaska.xyz`)
+      kind: Rule
+      services:
+        - name: frack
+          namespace: agents-shared
+          port: 18789
+      middlewares:
+        - name: authelia
+          namespace: security
+  tls:
+    certResolver: letsencrypt-prod
+
+---
+# Internal-only metrics scrape route (no Authelia for /metrics)
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: frack-metrics
+  namespace: agents-shared
+  labels:
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: frack
+  endpoints:
+    - port: metrics
+      interval: 30s
+      path: /metrics

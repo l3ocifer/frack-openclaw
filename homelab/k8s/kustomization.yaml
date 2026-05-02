@@ -5,8 +5,19 @@ kind: Kustomization
 # Lives in `agents-shared` alongside Vetinari, Sancho, the graph PVCs,
 # and the syncthing-graphs pod. See homelab/README.md and
 # homelab/config/SOUL.md.
-
-namespace: agents-shared
+#
+# NOTE: This kustomization deliberately omits a top-level `namespace:`
+# directive. Frack's RBAC includes per-namespace Roles for ten business
+# namespaces (potluck, blink-platform, ursulai, omnilemma, hyvapaska,
+# githired, chimera, ae, lunasea, authorworks, trade). A
+# `namespace: agents-shared` directive would rewrite every Role's
+# namespace to `agents-shared`, producing ten Roles with the same name
+# in the same namespace — kustomize rejects that with an "ID conflict"
+# error.
+#
+# Each resource sets its own metadata.namespace explicitly:
+#   pvc.yaml, service.yaml, ingressroute.yaml, deployment.yaml -> agents-shared
+#   rbac.yaml                                                    -> per-namespace
 
 resources:
   - pvc.yaml

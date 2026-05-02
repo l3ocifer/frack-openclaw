@@ -112,6 +112,13 @@ spec:
             - name: persona
               mountPath: /root/.openclaw/workspace
               readOnly: true
+            # OpenClaw's workspace bootstrap falls back to packaged templates
+            # at /opt/openclaw/docs/reference/templates. The homelab image does
+            # not currently package docs/, so expose the same bootstrap files
+            # from the persona ConfigMap to keep heartbeat/cron bootstrap alive.
+            - name: persona
+              mountPath: /opt/openclaw/docs/reference/templates
+              readOnly: true
             - name: openclaw-config
               mountPath: /root/.openclaw/openclaw.json
               subPath: openclaw.json

@@ -233,6 +233,27 @@
     },
   },
 
+  // Fleet event bus — durable async A2A backbone shared by all
+  // seven agents. Backed by Postgres LISTEN/NOTIFY on the `fleet`
+  // database (schema in scripts/agents/sql/fleet-schema.sql, applied
+  // declaratively by argocd/apps/_postgres/fleet-schema-job.yaml).
+  // Connection string sealed in frack-secrets as FLEET_DATABASE_URL.
+  fleet: {
+    enabled: true,
+    agentId: "frack",
+    databaseUrlEnv: "FLEET_DATABASE_URL",
+    notifyChannel: "fleet_events_new",
+    // Filter inbound events: subscribe to everything; drop quietly the
+    // ones that don't match the predicate. The predicate runs in-agent
+    // after pg_notify wakes up, so cheap.
+    inbound: {
+      // P0 anywhere in the fleet always wakes us; otherwise we only act
+      // on events explicitly targeting `frack` or all-broadcast (target
+      // is NULL).
+      predicate: "severity = 'p0' OR target IS NULL OR target = 'frack'",
+    },
+  },
+
   // Hard-kill sentinel (matches KILLSWITCH §3)
   hardKill: {
     sentinelPath: "/data/HARDSTOP-FRACK",

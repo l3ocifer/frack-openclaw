@@ -1,0 +1,26 @@
+---
+# Frack's Postgres database — declarative replacement for the
+# `CREATE DATABASE openclaw_frack` line that used to live in
+# homelab-pg.yaml's postInitSQL (which only runs once at cluster
+# bootstrap, so it was useless for adding/recreating the agent later).
+#
+# CNPG handles idempotency: re-applying just no-ops if the DB already
+# exists with the right owner.
+#
+# The `frack` role MUST exist before this resource reconciles —
+# bootstrapped by role-bootstrap-job.yaml (sync-wave 0).
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: openclaw-frack
+  namespace: databases
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  cluster:
+    name: homelab-pg
+  name: openclaw_frack
+  owner: frack
+  ensure: present
+  encoding: UTF8
+  databaseReclaimPolicy: retain

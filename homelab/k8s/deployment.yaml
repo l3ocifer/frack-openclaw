@@ -64,7 +64,9 @@ spec:
             - name: AGENT_ID
               value: "frack"
             - name: OPENCLAW_CONFIG
-              value: "/root/.openclaw/openclaw.json"
+              value: "/tmp/openclaw-missing.json"
+            - name: OPENCLAW_CONFIG_PATH
+              value: "/tmp/openclaw-missing.json"
             - name: OPENCLAW_WORKSPACE
               value: "/root/.openclaw/workspace"
             - name: TZ

@@ -14,7 +14,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  generateName: frack-role-bootstrap-
+  name: frack-role-bootstrap
   namespace: databases
   annotations:
     argocd.argoproj.io/sync-wave: "0"

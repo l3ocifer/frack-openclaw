@@ -48,6 +48,25 @@ spec:
       securityContext:
         runAsNonRoot: false  # OpenClaw expects /root/.openclaw
         fsGroup: 0
+      initContainers:
+        # OpenClaw writes runtime state (`.openclaw/`, sessions, caches) into
+        # OPENCLAW_WORKSPACE, but our persona ConfigMap is an inherently
+        # read-only tmpfs. Seed the writable workspace by copying the
+        # persona files in at startup so SOUL.md / AGENTS.md / IDENTITY.md
+        # / etc. land in the workspace tree the agent actually uses.
+        - name: seed-workspace
+          image: busybox:1.37
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              mkdir -p /workspace
+              cp -f /persona/*.md /workspace/ 2>/dev/null || true
+              # Don't clobber existing per-agent files written by previous runs.
+              ls -la /workspace
+          volumeMounts:
+            - { name: state,   mountPath: /workspace, subPath: openclaw/workspace }
+            - { name: persona, mountPath: /persona,   readOnly: true }
       containers:
         - name: openclaw
           image: ghcr.io/l3ocifer/frack-openclaw:homelab
@@ -68,7 +87,7 @@ spec:
             - name: OPENCLAW_CONFIG_PATH
               value: "/tmp/openclaw-missing.json"
             - name: OPENCLAW_WORKSPACE
-              value: "/root/.openclaw/workspace"
+              value: "/root/.openclaw/workspace-rw"
             - name: TZ
               value: "America/New_York"
             - name: HARDSTOP_PATH
@@ -109,9 +128,11 @@ spec:
             - name: state
               mountPath: /data
               subPath: hardstop
-            - name: persona
-              mountPath: /root/.openclaw/workspace
-              readOnly: true
+            # The agent's persona-seeded workspace lives on the state PVC
+            # under `openclaw/workspace`. The init container copies the
+            # persona ConfigMap into it at startup; OpenClaw can then
+            # write its `.openclaw/` runtime state alongside.
+            - { name: state, mountPath: /root/.openclaw/workspace-rw, subPath: openclaw/workspace }
             # OpenClaw's workspace bootstrap falls back to packaged templates
             # at /opt/openclaw/docs/reference/templates. The homelab image does
             # not currently package docs/, so expose the same bootstrap files

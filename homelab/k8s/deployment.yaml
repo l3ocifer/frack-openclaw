@@ -54,18 +54,59 @@ spec:
         # read-only tmpfs. Seed the writable workspace by copying the
         # persona files in at startup so SOUL.md / AGENTS.md / IDENTITY.md
         # / etc. land in the workspace tree the agent actually uses.
+        # Also seed the per-agent auth profile + models registry so the
+        # default `main` agent can route inference through LiteLLM
+        # without requiring an interactive `openclaw infer model auth login`.
         - name: seed-workspace
           image: busybox:1.37
           command: ["sh", "-c"]
+          envFrom:
+            - secretRef: { name: frack-secrets }
           args:
             - |
               set -eu
-              mkdir -p /workspace
+              mkdir -p /workspace /agent-state
               cp -f /persona/*.md /workspace/ 2>/dev/null || true
-              # Don't clobber existing per-agent files written by previous runs.
               ls -la /workspace
+              # Per-agent auth-profiles.json — flat provider->credential map.
+              cat > /agent-state/auth-profiles.json <<JSON
+              {
+                "litellm": {
+                  "type": "api_key",
+                  "apiKey": "${LITELLM_API_KEY}",
+                  "baseUrl": "http://litellm.inference.svc.cluster.local:4000/v1"
+                }
+              }
+              JSON
+              # Per-agent models.json — register the LiteLLM model
+              # catalog so the agent can pick chat/long/code/frontier
+              # without relying on the global model catalog.
+              cat > /agent-state/models.json <<JSON
+              {
+                "providers": {
+                  "litellm": {
+                    "baseUrl": "http://litellm.inference.svc.cluster.local:4000/v1",
+                    "api": "openai-completions",
+                    "apiKey": "${LITELLM_API_KEY}",
+                    "models": [
+                      {"id":"chat","name":"LiteLLM chat","contextWindow":32768,"maxTokens":8192,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0}},
+                      {"id":"long","name":"LiteLLM long","contextWindow":131072,"maxTokens":8192,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0}},
+                      {"id":"code","name":"LiteLLM code","contextWindow":32768,"maxTokens":8192,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0}},
+                      {"id":"frontier","name":"LiteLLM frontier","contextWindow":200000,"maxTokens":8192,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0}}
+                    ]
+                  }
+                },
+                "defaults": {
+                  "primary": "litellm/long",
+                  "fallbacks": ["litellm/chat"]
+                }
+              }
+              JSON
+              chmod 600 /agent-state/auth-profiles.json
+              ls -la /agent-state/
           volumeMounts:
-            - { name: state,   mountPath: /workspace, subPath: openclaw/workspace }
+            - { name: state, mountPath: /workspace,   subPath: openclaw/workspace }
+            - { name: state, mountPath: /agent-state, subPath: openclaw/agents/main/agent }
             - { name: persona, mountPath: /persona,   readOnly: true }
       containers:
         - name: openclaw

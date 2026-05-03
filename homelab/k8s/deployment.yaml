@@ -69,9 +69,19 @@ spec:
               cp -f /persona/*.md /workspace/ 2>/dev/null || true
               ls -la /workspace
               # Per-agent auth-profiles.json — flat provider->credential map.
+              # We point both `litellm` (catalog provider) and `openai`
+              # (default-fallback provider in OpenClaw's built-in agent
+              # runtime) at the same LiteLLM endpoint so every model the
+              # built-in catalog references — including `claude-opus-4-6`
+              # and `gpt-5.5` — is served by our cluster proxy.
               cat > /agent-state/auth-profiles.json <<JSON
               {
                 "litellm": {
+                  "type": "api_key",
+                  "apiKey": "${LITELLM_API_KEY}",
+                  "baseUrl": "http://litellm.inference.svc.cluster.local:4000/v1"
+                },
+                "openai": {
                   "type": "api_key",
                   "apiKey": "${LITELLM_API_KEY}",
                   "baseUrl": "http://litellm.inference.svc.cluster.local:4000/v1"

@@ -35,6 +35,9 @@ configMapGenerator:
       - HANDOFF.md=../shared/openclaw-configs/shared/HANDOFF.md
       - KILLSWITCH.md=../shared/openclaw-configs/shared/KILLSWITCH.md
       - USER.md=../shared/openclaw-configs/shared/USER.md
+      - IDENTITY.md=../shared/openclaw-configs/shared/IDENTITY.md
+      - BOOTSTRAP.md=../shared/openclaw-configs/shared/BOOTSTRAP.md
+      - HEARTBEAT.md=../shared/openclaw-configs/shared/HEARTBEAT.md
   - name: frack-openclaw-config
     files:
       - openclaw.json=../config/openclaw.json

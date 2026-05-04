@@ -143,6 +143,19 @@ spec:
               value: "America/New_York"
             - name: HARDSTOP_PATH
               value: "/data/HARDSTOP-FRACK"
+            # OpenClaw's built-in agent runtime defaults to openai/gpt-5.5
+            # when no explicit `--model` is passed (cron jobs, heartbeat
+            # checks, sub-agent spawn). Its `openai` provider checks
+            # OPENAI_API_KEY / OPENAI_BASE_URL env directly. Point both
+            # at the cluster LiteLLM proxy so default-model paths
+            # resolve to vllm-chat (gpt-5.5 is a model_group_alias).
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: frack-secrets
+                  key: LITELLM_API_KEY
+            - name: OPENAI_BASE_URL
+              value: "http://litellm.inference.svc.cluster.local:4000/v1"
           envFrom:
             - secretRef:
                 name: frack-secrets

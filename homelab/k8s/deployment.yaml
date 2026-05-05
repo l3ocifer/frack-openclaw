@@ -133,18 +133,20 @@ spec:
               value: "Frack"
             - name: AGENT_ID
               value: "frack"
-            # Point OpenClaw at the persona ConfigMap mount instead of
-            # the auto-generated empty /tmp/openclaw-missing.json. Without
-            # this OPENCLAW_CONFIG override, our agents.defaults.model,
-            # models.providers, channels, fleet, etc. blocks are silently
-            # ignored and the gateway boots with model="openai/gpt-5.5",
-            # which then 401s against api.openai.com on every embedded
-            # run. The mount is at /root/.openclaw/openclaw.json (subPath
-            # in the openclaw-config ConfigMap volume below).
+            # KNOWN ISSUE 2026-05-05: Pointing OPENCLAW_CONFIG at the
+            # mounted /root/.openclaw/openclaw.json ConfigMap surfaces a
+            # large set of schema mismatches against the current upstream
+            # OpenClaw config validator (apiKeyEnv, tools.profile=ops,
+            # tools.exec.security=high, gateway.mode=headless, root keys
+            # fleet/hardKill/quietHours, etc.). Fixing these end-to-end
+            # is its own migration. Until then, OpenClaw boots with the
+            # auto-generated /tmp/openclaw-missing.json and pulls model
+            # routing from OPENAI_BASE_URL / OPENAI_API_KEY env. A
+            # follow-up TODO is tracked in homelab agents-rollout-runbook.md.
             - name: OPENCLAW_CONFIG
-              value: "/root/.openclaw/openclaw.json"
+              value: "/tmp/openclaw-missing.json"
             - name: OPENCLAW_CONFIG_PATH
-              value: "/root/.openclaw/openclaw.json"
+              value: "/tmp/openclaw-missing.json"
             - name: OPENCLAW_WORKSPACE
               value: "/root/.openclaw/workspace-rw"
             - name: TZ

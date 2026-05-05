@@ -90,6 +90,16 @@
         primary: "litellm/chat",
         fallbacks: ["litellm/long", "ollama/qwen3-coder:30b"],
       },
+      // Embedded harness (skill creation, commit-message synthesis, etc.)
+      // defaulted to gpt-5.5/openai upstream and hit api.openai.com
+      // directly with our LITELLM_API_KEY → 401. Pin it at the same
+      // LiteLLM front door the main agent uses.
+      agentRuntime: {
+        defaults: {
+          provider: "litellm",
+          model: "chat",
+        },
+      },
       workspace: "/root/.openclaw/workspace",
       compaction: { mode: "safeguard" },
       contextPruning: { mode: "cache-ttl", ttl: "1h" },

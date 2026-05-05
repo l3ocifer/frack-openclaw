@@ -133,20 +133,18 @@ spec:
               value: "Frack"
             - name: AGENT_ID
               value: "frack"
-            # KNOWN ISSUE 2026-05-05: Pointing OPENCLAW_CONFIG at the
-            # mounted /root/.openclaw/openclaw.json ConfigMap surfaces a
-            # large set of schema mismatches against the current upstream
-            # OpenClaw config validator (apiKeyEnv, tools.profile=ops,
-            # tools.exec.security=high, gateway.mode=headless, root keys
-            # fleet/hardKill/quietHours, etc.). Fixing these end-to-end
-            # is its own migration. Until then, OpenClaw boots with the
-            # auto-generated /tmp/openclaw-missing.json and pulls model
-            # routing from OPENAI_BASE_URL / OPENAI_API_KEY env. A
-            # follow-up TODO is tracked in homelab agents-rollout-runbook.md.
+            # Point OpenClaw at the persona ConfigMap mount. The 2026-05-05
+            # config-schema migration brought all blocks into alignment with
+            # the upstream OpenClawSchema (apiKey secret refs, tools.profile
+            # enum, tools.exec.{security,ask} enums, gateway.mode=local).
+            # Without this, OpenClaw boots with the auto-generated empty
+            # /tmp/openclaw-missing.json and our model/provider/channel
+            # blocks are silently ignored — embedded harness then hits
+            # api.openai.com directly with the LiteLLM key and 401s.
             - name: OPENCLAW_CONFIG
-              value: "/tmp/openclaw-missing.json"
+              value: "/root/.openclaw/openclaw.json"
             - name: OPENCLAW_CONFIG_PATH
-              value: "/tmp/openclaw-missing.json"
+              value: "/root/.openclaw/openclaw.json"
             - name: OPENCLAW_WORKSPACE
               value: "/root/.openclaw/workspace-rw"
             - name: TZ

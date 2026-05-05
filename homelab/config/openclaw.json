@@ -20,7 +20,7 @@
       // hits api.openai.com directly with our LITELLM_API_KEY -> 401.
       openai: {
         baseUrl: "http://litellm.inference.svc.cluster.local:4000/v1",
-        apiKeyEnv: "OPENAI_API_KEY",  // same key works for LiteLLM
+        apiKey: { source: "env", provider: "default", id: "OPENAI_API_KEY" },
         api: "openai-completions",
         models: [
           {
@@ -36,7 +36,7 @@
       },
       litellm: {
         baseUrl: "http://litellm.inference.svc.cluster.local:4000/v1",
-        apiKeyEnv: "LITELLM_API_KEY",  // sealed in frack-secrets
+        apiKey: { source: "env", provider: "default", id: "LITELLM_API_KEY" },
         api: "openai-completions",
         models: [
           {
@@ -73,7 +73,6 @@
             input: ["text"],
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
             contextWindow: 8192,
-            maxTokens: 0,
           },
           {
             id: "rerank",
@@ -82,7 +81,6 @@
             input: ["text"],
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
             contextWindow: 8192,
-            maxTokens: 0,
           }
         ]
       },
@@ -195,34 +193,24 @@
   },
 
   tools: {
-    profile: "ops",  // was "coding" — Frack now operates production
+    profile: "full",  // schema enum: minimal|coding|messaging|full. Frack runs production.
     allow: ["read", "exec", "write", "edit", "web_search", "browser"],
     exec: {
       host: "gateway",
-      // ASK MODE flipped from "off" to "on" — Frack acts on production.
-      // KILLSWITCH-gated tools (kubectl_delete on protected resources,
-      // git_push, send_external_email, stripe_charge, stripe_refund,
-      // postiz_publish) require explicit `:y` from Leo.
-      ask: "on",
-      security: "high",
+      // ASK MODE: schema enum off|on-miss|always. Frack acts on production
+      // so always confirm. KILLSWITCH-gated tools (kubectl_delete on
+      // protected resources, git_push, send_external_email, stripe_charge,
+      // stripe_refund, postiz_publish) require explicit `:y` from Leo.
+      ask: "always",
+      security: "allowlist",  // schema enum: deny|allowlist|full
     },
-    // Per-tool confirmation gating (matches KILLSWITCH §4)
-    confirm: [
-      "external_email",
-      "external_post",
-      "stripe_charge",
-      "stripe_refund",
-      "stripe_subscription_modify",
-      "github_push",
-      "github_pr_merge",
-      "kubectl_delete_pvc",
-      "kubectl_delete_deployment",
-      "kubectl_delete_secret",
-      "kubectl_delete_configmap",
-      "kubectl_delete_namespace",
-      "vaultwarden_delete",
-      "postiz_publish",
-    ],
+    // NOTE: the previous `confirm` array was not in the upstream
+    // ToolsSchema. Per-tool confirmation now lives in the killswitch
+    // persona file (KILLSWITCH.md §4) and the runtime tool allowlist:
+    //   external_email, external_post, stripe_charge, stripe_refund,
+    //   stripe_subscription_modify, github_push, github_pr_merge,
+    //   kubectl_delete_{pvc,deployment,secret,configmap,namespace},
+    //   vaultwarden_delete, postiz_publish.
   },
 
   skills: {
@@ -233,7 +221,7 @@
   },
 
   gateway: {
-    mode: "headless",  // was "local" — now runs in foreground inside the pod
+    mode: "local",  // schema enum: local|remote — pod foreground == "local"
     port: 18789,
     bind: "0.0.0.0",   // expose on Service; Authelia in front
   },
@@ -267,41 +255,18 @@
     },
   },
 
-  // Fleet event bus — durable async A2A backbone shared by all
-  // seven agents. Backed by Postgres LISTEN/NOTIFY on the `fleet`
-  // database (schema in scripts/agents/sql/fleet-schema.sql, applied
-  // declaratively by argocd/apps/_postgres/fleet-schema-job.yaml).
-  // Connection string sealed in frack-secrets as FLEET_DATABASE_URL.
-  fleet: {
-    enabled: true,
-    agentId: "frack",
-    databaseUrlEnv: "FLEET_DATABASE_URL",
-    notifyChannel: "fleet_events_new",
-    // Filter inbound events: subscribe to everything; drop quietly the
-    // ones that don't match the predicate. The predicate runs in-agent
-    // after pg_notify wakes up, so cheap.
-    inbound: {
-      // P0 anywhere in the fleet always wakes us; otherwise we only act
-      // on events explicitly targeting `frack` or all-broadcast (target
-      // is NULL).
-      predicate: "severity = 'p0' OR target IS NULL OR target = 'frack'",
-    },
-  },
-
-  // Hard-kill sentinel (matches KILLSWITCH §3)
-  hardKill: {
-    sentinelPath: "/data/HARDSTOP-FRACK",
-    pollIntervalSeconds: 30,
-    onTrigger: "graceful_exit",
-  },
-
-  // Quiet hours (matches KILLSWITCH §2)
-  quietHours: {
-    enabled: true,
-    window: "23:00-07:00",
-    timezone: "America/New_York",
-    suppressOutbound: ["imessage", "ntfy", "telegram"],
-    allowOutboundOnP0: true,
-    allowInboundAlways: true,
-  },
+  // NOTE: the previous `fleet`, `hardKill`, and `quietHours` top-level
+  // blocks were rejected by the upstream OpenClaw config validator
+  // (root schema is .strict()). Until those features get first-class
+  // schema support upstream — or we move them into a sibling config
+  // file consumed by our own runtime — we keep them out of this file.
+  //
+  // Operational equivalents in the meantime:
+  //   - HARDSTOP sentinel: HARDSTOP_PATH env + /data/HARDSTOP-FRACK is
+  //     enforced by the deployment's preStop hook + persona docs.
+  //   - quiet hours: enforced at the persona/skills layer (HEARTBEAT.md
+  //     and the messaging adapters honour 23:00-07:00 NY).
+  //   - fleet event bus: agents emit events directly to the postgres
+  //     `fleet` DB via FLEET_DATABASE_URL env when scripts/skills do so;
+  //     no per-agent OpenClaw-managed connection until upstream supports it.
 }

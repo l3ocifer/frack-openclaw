@@ -114,10 +114,23 @@ spec:
               JSON
               chmod 600 /agent-state/auth-profiles.json
               ls -la /agent-state/
+              # Seed a WRITABLE copy of the persona OpenClaw config. The
+              # ConfigMap mount itself is read-only, so OpenClaw 401s on
+              # boot ("EBUSY: rename openclaw.json.tmp -> openclaw.json")
+              # when it tries to persist plugin auto-enable + auth-token
+              # changes. Copy the rendered config into the state volume
+              # at /openclaw-runtime/openclaw.json — the main container
+              # then points OPENCLAW_CONFIG at that path.
+              mkdir -p /openclaw-runtime
+              cp -f /openclaw-config-src/openclaw.json /openclaw-runtime/openclaw.json
+              chmod 644 /openclaw-runtime/openclaw.json
+              ls -la /openclaw-runtime/
           volumeMounts:
-            - { name: state, mountPath: /workspace,   subPath: openclaw/workspace }
-            - { name: state, mountPath: /agent-state, subPath: openclaw/agents/main/agent }
-            - { name: persona, mountPath: /persona,   readOnly: true }
+            - { name: state,           mountPath: /workspace,           subPath: openclaw/workspace }
+            - { name: state,           mountPath: /agent-state,         subPath: openclaw/agents/main/agent }
+            - { name: state,           mountPath: /openclaw-runtime,    subPath: openclaw/runtime-config }
+            - { name: persona,         mountPath: /persona,             readOnly: true }
+            - { name: openclaw-config, mountPath: /openclaw-config-src, readOnly: true }
       containers:
         - name: openclaw
           image: ghcr.io/l3ocifer/frack-openclaw:homelab
@@ -133,18 +146,16 @@ spec:
               value: "Frack"
             - name: AGENT_ID
               value: "frack"
-            # Point OpenClaw at the persona ConfigMap mount. The 2026-05-05
-            # config-schema migration brought all blocks into alignment with
-            # the upstream OpenClawSchema (apiKey secret refs, tools.profile
-            # enum, tools.exec.{security,ask} enums, gateway.mode=local).
-            # Without this, OpenClaw boots with the auto-generated empty
-            # /tmp/openclaw-missing.json and our model/provider/channel
-            # blocks are silently ignored — embedded harness then hits
-            # api.openai.com directly with the LiteLLM key and 401s.
+            # Point OpenClaw at the WRITABLE copy of the persona config
+            # seeded into /root/.openclaw/runtime-config/ by the
+            # seed-workspace init container. OpenClaw needs to write the
+            # config back at boot to persist plugin auto-enable + auth
+            # token bookkeeping; the source ConfigMap mount is read-only
+            # so it 401s with EBUSY rename.
             - name: OPENCLAW_CONFIG
-              value: "/root/.openclaw/openclaw.json"
+              value: "/root/.openclaw/runtime-config/openclaw.json"
             - name: OPENCLAW_CONFIG_PATH
-              value: "/root/.openclaw/openclaw.json"
+              value: "/root/.openclaw/runtime-config/openclaw.json"
             - name: OPENCLAW_WORKSPACE
               value: "/root/.openclaw/workspace-rw"
             - name: TZ
@@ -205,6 +216,8 @@ spec:
             # persona ConfigMap into it at startup; OpenClaw can then
             # write its `.openclaw/` runtime state alongside.
             - { name: state, mountPath: /root/.openclaw/workspace-rw, subPath: openclaw/workspace }
+            # Seeded by the init container — writable copy of openclaw.json.
+            - { name: state, mountPath: /root/.openclaw/runtime-config, subPath: openclaw/runtime-config }
             # OpenClaw's workspace bootstrap falls back to packaged templates
             # at /opt/openclaw/docs/reference/templates. The homelab image does
             # not currently package docs/, so expose the same bootstrap files
@@ -212,10 +225,10 @@ spec:
             - name: persona
               mountPath: /opt/openclaw/docs/reference/templates
               readOnly: true
-            - name: openclaw-config
-              mountPath: /root/.openclaw/openclaw.json
-              subPath: openclaw.json
-              readOnly: true
+            # NOTE: source openclaw-config ConfigMap is mounted in the
+            # seed-workspace initContainer and copied to a writable
+            # path under /root/.openclaw/runtime-config/. The main
+            # container reads only the writable copy.
             - name: skills
               mountPath: /root/.openclaw/skills
               readOnly: true

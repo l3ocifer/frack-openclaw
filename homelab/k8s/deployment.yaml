@@ -133,10 +133,18 @@ spec:
               value: "Frack"
             - name: AGENT_ID
               value: "frack"
+            # Point OpenClaw at the persona ConfigMap mount instead of
+            # the auto-generated empty /tmp/openclaw-missing.json. Without
+            # this OPENCLAW_CONFIG override, our agents.defaults.model,
+            # models.providers, channels, fleet, etc. blocks are silently
+            # ignored and the gateway boots with model="openai/gpt-5.5",
+            # which then 401s against api.openai.com on every embedded
+            # run. The mount is at /root/.openclaw/openclaw.json (subPath
+            # in the openclaw-config ConfigMap volume below).
             - name: OPENCLAW_CONFIG
-              value: "/tmp/openclaw-missing.json"
+              value: "/root/.openclaw/openclaw.json"
             - name: OPENCLAW_CONFIG_PATH
-              value: "/tmp/openclaw-missing.json"
+              value: "/root/.openclaw/openclaw.json"
             - name: OPENCLAW_WORKSPACE
               value: "/root/.openclaw/workspace-rw"
             - name: TZ

@@ -112,32 +112,28 @@
         primary: "litellm/chat",
         fallbacks: ["litellm/long", "ollama/qwen3-coder:30b"],
       },
-      // Embedded harness (skill creation, commit-message synthesis, etc.)
-      // defaulted to gpt-5.5/openai upstream and hit api.openai.com
-      // directly with our LITELLM_API_KEY → 401. Pin it at the same
-      // LiteLLM front door the main agent uses.
-      agentRuntime: {
-        defaults: {
-          provider: "litellm",
-          model: "chat",
-        },
-      },
+      // NOTE: previous `agentRuntime: { defaults: {...} }` was rejected
+      // (AgentRuntimePolicySchema only accepts {id, fallback}). The main
+      // model.primary above ("litellm/chat") is what the embedded
+      // harness now uses, since OpenClaw inherits the agent's model
+      // when no per-runtime override exists.
       workspace: "/root/.openclaw/workspace",
       compaction: { mode: "safeguard" },
       contextPruning: { mode: "cache-ttl", ttl: "1h" },
       maxConcurrent: 4,
       thinkingDefault: "low",
       heartbeat: {
+        // Schedule: :10 and :40 (offset from Frick :00/:30 and Sancho :20/:50).
+        // The actual cron offset is enforced by the gateway's cron runner;
+        // this block only sets the cadence + target string.
         every: "30m",
-        offsetMinutes: 10,  // :10 and :40 to avoid Frick (:00 :30) and Sancho (:20 :50)
         target: "last",
       },
       memorySearch: {
         enabled: true,
         sources: ["memory", "sessions"],
         // Multi-graph: own graph (RW), Leo's PKM (R+restricted W),
-        // siblings R-only. Mounted via hostPath on thebeast (per
-        // host-side Syncthing setup — see scripts/agents/setup-host-syncthing.sh).
+        // siblings R-only. Mounted via hostPath on thebeast.
         extraPaths: [
           "/srv/graphs/frack/pages/ai-memory",
           "/srv/graphs/frack/journals",
@@ -149,20 +145,26 @@
           "/srv/graphs/sancho/pages/ai-memory",
           "/srv/graphs/sancho/journals",
         ],
-        provider: "litellm",
-        litellm: {
-          embedModel: "embed",
-          rerankModel: "rerank",
+        // Embedding provider — point `remote.baseUrl` at LiteLLM's
+        // OpenAI-compatible /v1 endpoint and use the `embed` model.
+        provider: "remote",
+        remote: {
+          baseUrl: "http://litellm.inference.svc.cluster.local:4000/v1",
+          apiKey: { source: "env", provider: "default", id: "LITELLM_API_KEY" },
         },
+        model: "embed",
         fallback: "local",
         local: {
           modelPath: "hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf",
         },
-        // Postgres pgvector backing store (via DATABASE_URL secret)
+        // SQLite-backed vector store on the agent's writable workspace.
+        // Postgres-pgvector is not in the upstream MemorySearchStoreSchema;
+        // session memory continues to live in the postgres `frack_memory`
+        // schema via the agent's own SQL adapters (DATABASE_URL env).
         store: {
-          backend: "postgres-pgvector",
-          urlEnv: "DATABASE_URL",
-          schema: "frack_memory",
+          driver: "sqlite",
+          path: "/root/.openclaw/workspace-rw/memory/index.sqlite",
+          vector: { enabled: true },
         },
         sync: {
           watch: true,

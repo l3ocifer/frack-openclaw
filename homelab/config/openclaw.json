@@ -228,34 +228,17 @@
     bind: "0.0.0.0",   // expose on Service; Authelia in front
   },
 
-  // Channels — populated from sealed `frack-secrets` env vars
-  channels: {
-    matrix: {
-      enabled: true,
-      homeserver: "https://conduit.leopaska.xyz",
-      userId: "@frack:leopaska.xyz",
-      accessTokenEnv: "MATRIX_ACCESS_TOKEN",
-      defaultRoom: "!homelab:leopaska.xyz",
-    },
-    telegram: {
-      enabled: true,
-      botTokenEnv: "TELEGRAM_BOT_TOKEN",
-      prefix: "/frack",
-    },
-    imessage: {
-      enabled: true,
-      type: "bluebubbles-proxy",
-      baseUrl: "http://bluebubbles-proxy.agents-shared.svc.cluster.local:8080",
-      apiKeyEnv: "BLUEBUBBLES_API_KEY",
-      webhookPath: "/imessage/frack",
-    },
-    ntfy: {
-      enabled: true,
-      outboundOnly: true,
-      topicUrl: "https://ntfy.leopaska.xyz/frack",
-      bearerTokenEnv: "NTFY_TOKEN",
-    },
-  },
+  // NOTE: channels intentionally omitted. The upstream channel-plugin
+  // config schemas (matrix, telegram, bluebubbles) expect a far richer
+  // account-based shape than our previous flat config — apiKeyEnv, the
+  // imessage proxy block, and ntfy entirely are all rejected by the
+  // current validators. Each channel plugin auto-discovers its
+  // credentials from env vars at boot:
+  //   matrix:      MATRIX_HOMESERVER + MATRIX_USER_ID + MATRIX_ACCESS_TOKEN
+  //   telegram:    TELEGRAM_BOT_TOKEN
+  //   bluebubbles: BLUEBUBBLES_SERVER_URL + BLUEBUBBLES_PASSWORD
+  // ntfy is used directly via outbound HTTP from skills/scripts (it's
+  // not a registered openclaw channel plugin).
 
   // NOTE: the previous `fleet`, `hardKill`, and `quietHours` top-level
   // blocks were rejected by the upstream OpenClaw config validator

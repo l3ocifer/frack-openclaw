@@ -10,6 +10,30 @@
   models: {
     mode: "merge",
     providers: {
+      // Override the built-in `openai` provider so the OpenClaw embedded
+      // harness — which falls back to `openai/gpt-5.5` for skill creation,
+      // commit-message synthesis, etc. when the agentRuntime is left
+      // unspecified — routes through the same LiteLLM gateway as the
+      // main agent. The matching `gpt-5.5 -> chat` alias lives in
+      // ~/git/homelab/argocd/apps/_inference/40-litellm-config.yaml
+      // (model_group_alias). Without this override the embedded run
+      // hits api.openai.com directly with our LITELLM_API_KEY -> 401.
+      openai: {
+        baseUrl: "http://litellm.inference.svc.cluster.local:4000/v1",
+        apiKeyEnv: "OPENAI_API_KEY",  // same key works for LiteLLM
+        api: "openai-completions",
+        models: [
+          {
+            id: "gpt-5.5",
+            name: "Embedded harness fallback — alias to LiteLLM chat",
+            reasoning: false,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            contextWindow: 32768,
+            maxTokens: 8192,
+          }
+        ]
+      },
       litellm: {
         baseUrl: "http://litellm.inference.svc.cluster.local:4000/v1",
         apiKeyEnv: "LITELLM_API_KEY",  // sealed in frack-secrets

@@ -121,14 +121,69 @@ spec:
               # changes. Copy the rendered config into the state volume
               # at /openclaw-runtime/openclaw.json — the main container
               # then points OPENCLAW_CONFIG at that path.
+              #
+              # Idempotent seed: only re-copy when the source ConfigMap
+              # content has actually changed (sha256 differs from the
+              # marker stored alongside). Otherwise we'd clobber the
+              # runtime mutations OpenClaw makes on its writable copy
+              # — `gateway.auth.token`, plugin auto-enable bookkeeping,
+              # `_meta` block — on every pod restart, forcing a token
+              # rotation every time the pod cycles.
               mkdir -p /openclaw-runtime
-              cp -f /openclaw-config-src/openclaw.json /openclaw-runtime/openclaw.json
-              chmod 644 /openclaw-runtime/openclaw.json
+              src=/openclaw-config-src/openclaw.json
+              dst=/openclaw-runtime/openclaw.json
+              hash_file=/openclaw-runtime/.configmap-source.sha256
+              current_hash=$(sha256sum "$src" | awk '{print $1}')
+              stored_hash=$(cat "$hash_file" 2>/dev/null || echo "")
+              if [ ! -f "$dst" ] || [ "$current_hash" != "$stored_hash" ]; then
+                echo "── seeding openclaw.json from configmap (hash ${stored_hash:-none} -> ${current_hash})"
+                cp -f "$src" "$dst"
+                chmod 644 "$dst"
+                echo "$current_hash" > "$hash_file"
+              else
+                echo "── openclaw.json runtime copy preserved (configmap unchanged: $current_hash)"
+              fi
+              # Defensive cleanup at the PVC root (mounted at
+              # /openclaw-state-root). A previous deployment template
+              # mounted the ConfigMap directly at
+              # /root/.openclaw/openclaw.json (read-only subPath) and
+              # OpenClaw's atomic-rename writes leaked .tmp / .bak.N
+              # files into the state PVC root, which confused its
+              # boot-time recovery path. The current deployment routes
+              # through /root/.openclaw/runtime-config/ so any
+              # openclaw.json* at the PVC root is stale.
+              for pat in 'openclaw.json.*.tmp' \
+                         'openclaw.json.bak' \
+                         'openclaw.json.bak.[0-9]*' \
+                         '.openclaw.json.tmp.*'; do
+                for f in /openclaw-state-root/$pat; do
+                  [ -e "$f" ] || continue
+                  echo "── pruning stale $f"
+                  rm -f "$f"
+                done
+              done
+              # Stale 0-byte openclaw.json at root (orphaned by old
+              # deployments). Leave non-empty files alone — operators
+              # may have placed them deliberately.
+              if [ -f /openclaw-state-root/openclaw.json ]; then
+                size=$(stat -c %s /openclaw-state-root/openclaw.json 2>/dev/null || echo 0)
+                if [ "$size" = "0" ]; then
+                  echo "── pruning empty /openclaw-state-root/openclaw.json"
+                  rm -f /openclaw-state-root/openclaw.json
+                fi
+              fi
               ls -la /openclaw-runtime/
           volumeMounts:
             - { name: state,           mountPath: /workspace,           subPath: openclaw/workspace }
             - { name: state,           mountPath: /agent-state,         subPath: openclaw/agents/main/agent }
             - { name: state,           mountPath: /openclaw-runtime,    subPath: openclaw/runtime-config }
+            # PVC root for openclaw — used by seed-workspace to prune
+            # leftover openclaw.json.{tmp,bak.N} debris from a
+            # previous deployment template that mounted the ConfigMap
+            # directly at /root/.openclaw/openclaw.json. The main
+            # container does NOT remount this; it sees the same path
+            # via /root/.openclaw (state subPath openclaw).
+            - { name: state,           mountPath: /openclaw-state-root, subPath: openclaw }
             - { name: persona,         mountPath: /persona,             readOnly: true }
             - { name: openclaw-config, mountPath: /openclaw-config-src, readOnly: true }
       containers:

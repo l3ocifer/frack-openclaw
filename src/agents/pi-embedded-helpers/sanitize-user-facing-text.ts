@@ -3,6 +3,7 @@ import {
   extractLeadingHttpStatus,
   formatRawAssistantErrorForUi,
   isCloudflareOrHtmlErrorPage,
+  isGenericProviderInternalError,
   MALFORMED_STREAMING_FRAGMENT_ERROR_MESSAGE,
   parseApiErrorInfo,
   parseApiErrorPayload,
@@ -12,6 +13,11 @@ import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalLowercaseString,
 } from "../../shared/string-coerce.js";
+import {
+  stripLegacyBracketToolCallBlocks,
+  stripMinimaxToolCallXml,
+  stripToolCallXmlTags,
+} from "../../shared/text/assistant-visible-text.js";
 import { formatExecDeniedUserMessage } from "../exec-approval-result.js";
 import { stripInternalRuntimeContext } from "../internal-runtime-context.js";
 import { stableStringify } from "../stable-stringify.js";
@@ -400,11 +406,15 @@ export function sanitizeUserFacingText(text: unknown, opts?: { errorContext?: bo
   }
   const errorContext = opts?.errorContext ?? false;
   const stripped = stripInboundMetadata(stripInternalRuntimeContext(stripFinalTagsFromText(raw)));
+  const withoutToolCallXml = stripToolCallXmlTags(stripMinimaxToolCallXml(stripped), {
+    stripFunctionCallsXmlPayloads: true,
+  });
   // Replay repair may synthesize this placeholder to keep provider transcripts valid.
   // It is internal scaffolding, so drop standalone placeholder lines before delivery
   // while preserving ordinary inline mentions a user may be discussing.
-  const withoutPlaceholder = stripToolCallsOmittedPlaceholderLines(stripped);
-  const trimmed = withoutPlaceholder.trim();
+  const withoutPlaceholder = stripToolCallsOmittedPlaceholderLines(withoutToolCallXml);
+  const withoutToolCallBlocks = stripLegacyBracketToolCallBlocks(withoutPlaceholder);
+  const trimmed = withoutToolCallBlocks.trim();
   if (!trimmed) {
     return "";
   }
@@ -442,6 +452,9 @@ export function sanitizeUserFacingText(text: unknown, opts?: { errorContext?: bo
     if (isBillingErrorMessage(trimmed)) {
       return BILLING_ERROR_USER_MESSAGE;
     }
+    if (isGenericProviderInternalError(trimmed)) {
+      return formatRawAssistantErrorForUi(trimmed);
+    }
     if (isInvalidStreamingEventOrderError(trimmed)) {
       return "LLM request failed: provider returned an invalid streaming response. Please try again.";
     }
@@ -467,6 +480,6 @@ export function sanitizeUserFacingText(text: unknown, opts?: { errorContext?: bo
     }
   }
 
-  const withoutLeadingEmptyLines = withoutPlaceholder.replace(/^(?:[ \t]*\r?\n)+/, "");
+  const withoutLeadingEmptyLines = withoutToolCallBlocks.replace(/^(?:[ \t]*\r?\n)+/, "");
   return collapseConsecutiveDuplicateBlocks(withoutLeadingEmptyLines);
 }

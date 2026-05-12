@@ -1,5 +1,47 @@
 # Changelog
 
+## 2026.5.12
+
+### Changes
+
+- Version alignment with core OpenClaw release numbers.
+
+## 2026.5.10
+
+### Changes
+
+- Version alignment with core OpenClaw release numbers.
+
+## 2026.5.8
+
+### Changes
+
+- Version alignment with core OpenClaw release numbers.
+
+## 2026.5.6
+
+### Changes
+
+- Version alignment with core OpenClaw release numbers.
+
+## 2026.5.4
+
+### Changes
+
+- Version alignment with core OpenClaw release numbers.
+
+## 2026.5.3
+
+### Changes
+
+- Version alignment with core OpenClaw release numbers.
+
+## 2026.5.2
+
+### Changes
+
+- Version alignment with core OpenClaw release numbers.
+
 ## Unreleased
 
 ### Changes
@@ -93,7 +135,7 @@ collapsed here.
 
 ### Fixes
 
-- Bundled channels/setup: load shared secret contracts through packaged top-level sidecars across BlueBubbles, Feishu, Google Chat, IRC, Matrix, Mattermost, Microsoft Teams, Nextcloud Talk, Slack, and Zalo so installed npm builds no longer rely on missing `dist/extensions/*/src/*` files during gateway startup.
+- Bundled channels/setup: load shared secret contracts through packaged top-level sidecars across Feishu, Google Chat, IRC, Matrix, Mattermost, Microsoft Teams, Nextcloud Talk, Slack, and Zalo so installed npm builds no longer rely on missing `dist/extensions/*/src/*` files during gateway startup.
 
 ## 2026.4.7
 
@@ -192,7 +234,7 @@ collapsed here.
 ### Fixes
 
 - Plugins/bundled runtimes: ship bundled plugin runtime sidecars like WhatsApp `light-runtime-api.js`, Matrix `runtime-api.js`, and other plugin runtime entry files in the npm package again, so global installs stop failing on missing bundled plugin runtime surfaces.
-- Plugins/Matrix: avoid duplicate `resolveMatrixAccountStringValues` runtime-api exports under Jiti so bundled Matrix installs no longer crash at startup with `Cannot redefine property: resolveMatrixAccountStringValues`. Fixes #52909 and #52891. Thanks @vincentkoc.
+- Plugins/Matrix: avoid duplicate `resolveMatrixAccountStringValues` runtime-api exports under source loaders so bundled Matrix installs no longer crash at startup with `Cannot redefine property: resolveMatrixAccountStringValues`. Fixes #52909 and #52891. Thanks @vincentkoc.
 
 ## 2026.3.22
 

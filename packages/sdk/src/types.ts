@@ -40,6 +40,18 @@ export type EnvironmentSelection =
   | { type: "managed"; provider: string; repo?: string; ref?: string }
   | { type: "ephemeral"; provider: string; repo?: string; ref?: string };
 
+export type EnvironmentSummary = {
+  id: string;
+  type: "local" | "gateway" | "node" | "managed" | "ephemeral" | (string & {});
+  label?: string;
+  status: "available" | "unavailable" | "starting" | "stopping" | "error";
+  capabilities?: string[];
+};
+
+export type EnvironmentsListResult = {
+  environments: EnvironmentSummary[];
+};
+
 export type WorkspaceSelection = {
   cwd?: string;
   repo?: string;
@@ -108,10 +120,78 @@ export type ArtifactsDownloadResult = {
   url?: string;
 };
 
+export type TaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "timed_out";
+
+export type TaskSummary = {
+  id: string;
+  taskId?: string;
+  kind?: string;
+  runtime?: string;
+  status: TaskStatus;
+  title?: string;
+  agentId?: string;
+  sessionKey?: string;
+  childSessionKey?: string;
+  ownerKey?: string;
+  runId?: string;
+  flowId?: string;
+  parentTaskId?: string;
+  sourceId?: string;
+  createdAt?: RunTimestamp;
+  updatedAt?: RunTimestamp;
+  startedAt?: RunTimestamp;
+  endedAt?: RunTimestamp;
+  progressSummary?: string;
+  terminalSummary?: string;
+  error?: string;
+};
+
+export type TasksListParams = {
+  status?: TaskStatus | TaskStatus[];
+  agentId?: string;
+  sessionKey?: string;
+  limit?: number;
+  cursor?: string;
+};
+
+export type TasksListResult = {
+  tasks: TaskSummary[];
+  nextCursor?: string;
+};
+
+export type TasksGetResult = {
+  task: TaskSummary;
+};
+
+export type TasksCancelResult = {
+  found: boolean;
+  cancelled: boolean;
+  reason?: string;
+  task?: TaskSummary;
+};
+
 export type SDKError = {
   code?: string;
   message: string;
   details?: unknown;
+};
+
+export type ToolInvokeParams = {
+  args?: JsonObject;
+  sessionKey?: string;
+  agentId?: string;
+  confirm?: boolean;
+  idempotencyKey?: string;
+};
+
+export type ToolInvokeResult = {
+  ok: boolean;
+  toolName: string;
+  output?: unknown;
+  requiresApproval?: boolean;
+  approvalId?: string;
+  source?: string;
+  error?: SDKError;
 };
 
 export type RunResult = {

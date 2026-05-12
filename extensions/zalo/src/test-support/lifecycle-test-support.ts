@@ -10,7 +10,7 @@ function resolveLifecycleAllowFrom(params: {
   return params.allowFrom ?? (params.dmPolicy === "open" ? ["*"] : undefined);
 }
 
-export function createLifecycleConfig(params: {
+function createLifecycleConfig(params: {
   accountId: string;
   dmPolicy: "open" | "pairing";
   allowFrom?: string[];
@@ -38,7 +38,7 @@ export function createLifecycleConfig(params: {
   } as OpenClawConfig;
 }
 
-export function createLifecycleAccount(params: {
+function createLifecycleAccount(params: {
   accountId: string;
   dmPolicy: "open" | "pairing";
   allowFrom?: string[];
@@ -288,6 +288,39 @@ export function createImageLifecycleCore() {
             dispatchResult,
           };
         }) as unknown as PluginRuntime["channel"]["turn"]["run"],
+        runAssembled: vi.fn(
+          async (params: Parameters<PluginRuntime["channel"]["turn"]["runAssembled"]>[0]) => {
+            await params.recordInboundSession({
+              storePath: params.storePath,
+              sessionKey: params.ctxPayload.SessionKey ?? params.routeSessionKey,
+              ctx: params.ctxPayload,
+              groupResolution: params.record?.groupResolution,
+              createIfMissing: params.record?.createIfMissing,
+              updateLastRoute: params.record?.updateLastRoute,
+              onRecordError: params.record?.onRecordError ?? (() => undefined),
+            });
+            const dispatchResult = await params.dispatchReplyWithBufferedBlockDispatcher({
+              ctx: params.ctxPayload,
+              cfg: params.cfg,
+              dispatcherOptions: {
+                ...params.dispatcherOptions,
+                deliver: async (...args: Parameters<typeof params.delivery.deliver>) => {
+                  await params.delivery.deliver(...args);
+                },
+                onError: params.delivery.onError,
+              },
+              replyOptions: params.replyOptions,
+              replyResolver: params.replyResolver,
+            });
+            return {
+              admission: params.admission ?? { kind: "dispatch" as const },
+              dispatched: true,
+              ctxPayload: params.ctxPayload,
+              routeSessionKey: params.routeSessionKey,
+              dispatchResult,
+            };
+          },
+        ) as unknown as PluginRuntime["channel"]["turn"]["runAssembled"],
         buildContext:
           buildChannelTurnContextMock as unknown as PluginRuntime["channel"]["turn"]["buildContext"],
       },
@@ -359,7 +392,7 @@ export async function settleAsyncWork(): Promise<void> {
   }
 }
 
-export async function postWebhookUpdate(params: {
+async function postWebhookUpdate(params: {
   baseUrl: string;
   path: string;
   secret: string;

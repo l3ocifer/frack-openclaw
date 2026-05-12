@@ -22,6 +22,7 @@ import {
   laneWeight,
   lanesNeedE2eImageKind,
   lanesNeedOpenClawPackage,
+  normalizeReleaseProfile,
   parseLaneSelection,
   parseLiveMode,
   parseProfile,
@@ -194,16 +195,38 @@ function shellQuote(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
 }
 
+function githubWorkflowRef() {
+  const explicit = process.env.OPENCLAW_DOCKER_E2E_WORKFLOW_REF;
+  if (explicit) {
+    return explicit;
+  }
+  const refName = process.env.GITHUB_REF_NAME;
+  if (refName) {
+    return refName;
+  }
+  const ref = process.env.GITHUB_REF;
+  if (ref?.startsWith("refs/heads/")) {
+    return ref.slice("refs/heads/".length);
+  }
+  if (ref?.startsWith("refs/tags/")) {
+    return ref.slice("refs/tags/".length);
+  }
+  return undefined;
+}
+
 function githubWorkflowRerunCommand(laneNames, ref) {
+  const workflowRef = githubWorkflowRef();
+  const releasePath = process.env.OPENCLAW_DOCKER_ALL_PROFILE === RELEASE_PATH_PROFILE;
   const fields = [
     "gh workflow run",
     shellQuote(process.env.OPENCLAW_DOCKER_E2E_WORKFLOW || DEFAULT_GITHUB_WORKFLOW),
+    ...(workflowRef ? ["--ref", shellQuote(workflowRef)] : []),
     "-f",
     `ref=${shellQuote(ref)}`,
     "-f",
     "include_repo_e2e=false",
     "-f",
-    "include_release_path_suites=false",
+    `include_release_path_suites=${releasePath ? "true" : "false"}`,
     "-f",
     "include_openwebui=false",
     "-f",
@@ -226,6 +249,18 @@ function githubWorkflowRerunCommand(laneNames, ref) {
     fields.push(
       "-f",
       `published_upgrade_survivor_baseline=${shellQuote(process.env.OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPEC)}`,
+    );
+  }
+  if (process.env.OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPECS) {
+    fields.push(
+      "-f",
+      `published_upgrade_survivor_baselines=${shellQuote(process.env.OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPECS)}`,
+    );
+  }
+  if (process.env.OPENCLAW_UPGRADE_SURVIVOR_SCENARIOS) {
+    fields.push(
+      "-f",
+      `published_upgrade_survivor_scenarios=${shellQuote(process.env.OPENCLAW_UPGRADE_SURVIVOR_SCENARIOS)}`,
     );
   }
   if (process.env.OPENCLAW_DOCKER_E2E_BARE_IMAGE) {
@@ -257,6 +292,8 @@ function buildLaneRerunCommand(name, baseEnv) {
     ["OPENCLAW_DOCKER_E2E_FUNCTIONAL_IMAGE", baseEnv.OPENCLAW_DOCKER_E2E_FUNCTIONAL_IMAGE],
     ["OPENCLAW_CURRENT_PACKAGE_TGZ", baseEnv.OPENCLAW_CURRENT_PACKAGE_TGZ],
     ["OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPEC", baseEnv.OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPEC],
+    ["OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPECS", baseEnv.OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPECS],
+    ["OPENCLAW_UPGRADE_SURVIVOR_SCENARIOS", baseEnv.OPENCLAW_UPGRADE_SURVIVOR_SCENARIOS],
   ];
   if (baseEnv.OPENCLAW_DOCKER_ALL_PNPM_COMMAND) {
     env.push(["OPENCLAW_DOCKER_ALL_PNPM_COMMAND", baseEnv.OPENCLAW_DOCKER_ALL_PNPM_COMMAND]);
@@ -722,6 +759,7 @@ function laneEnv(poolLane, baseEnv, logDir, cacheKey) {
     ...baseEnv,
   };
   const name = poolLane.name;
+  env.OPENCLAW_DOCKER_ALL_LANE_NAME = name;
   const image = e2eImageForLane(poolLane, baseEnv);
   if (image) {
     env.OPENCLAW_DOCKER_E2E_IMAGE = image;
@@ -1072,6 +1110,9 @@ async function main() {
     cliArgs.has("--plan-json") || parseBool(process.env.OPENCLAW_DOCKER_ALL_PLAN_JSON, false);
   const planReleaseAll = parseBool(process.env.OPENCLAW_DOCKER_ALL_PLAN_RELEASE_ALL, false);
   const profile = parseProfile(process.env.OPENCLAW_DOCKER_ALL_PROFILE);
+  const releaseProfile = normalizeReleaseProfile(
+    process.env.OPENCLAW_DOCKER_ALL_RELEASE_PROFILE || process.env.OPENCLAW_RELEASE_PROFILE,
+  );
   const releaseChunk = process.env.OPENCLAW_DOCKER_ALL_CHUNK || process.env.DOCKER_E2E_CHUNK || "";
   const includeOpenWebUI = parseBool(
     process.env.OPENCLAW_DOCKER_ALL_INCLUDE_OPENWEBUI ?? process.env.INCLUDE_OPENWEBUI,
@@ -1123,8 +1164,11 @@ async function main() {
     planReleaseAll: planJson && planReleaseAll,
     profile,
     releaseChunk,
+    releaseProfile,
     selectedLaneNames,
     timingStore,
+    upgradeSurvivorBaselines: process.env.OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPECS,
+    upgradeSurvivorScenarios: process.env.OPENCLAW_UPGRADE_SURVIVOR_SCENARIOS,
   });
 
   if (planJson) {
@@ -1135,6 +1179,9 @@ async function main() {
   await mkdir(logDir, { recursive: true });
   console.log(`==> Docker test logs: ${logDir}`);
   console.log(`==> Profile: ${profile}${releaseChunk ? ` chunk=${releaseChunk}` : ""}`);
+  if (profile === RELEASE_PATH_PROFILE) {
+    console.log(`==> Release profile: ${releaseProfile}`);
+  }
   console.log(`==> Parallelism: ${parallelism}`);
   console.log(`==> Tail parallelism: ${tailParallelism}`);
   console.log(`==> Lane timeout: ${laneTimeoutMs}ms`);
@@ -1159,7 +1206,7 @@ async function main() {
     console.log(`==> Selected lanes: ${selectedLaneNames.join(", ")}`);
   }
   console.log(`==> Docker lane timings: ${timingStore.enabled ? timingsFile : "disabled"}`);
-  console.log(`==> Live-test bundled plugin deps: ${baseEnv.OPENCLAW_DOCKER_BUILD_EXTENSIONS}`);
+  console.log(`==> Live-test bundled plugins: ${baseEnv.OPENCLAW_DOCKER_BUILD_EXTENSIONS}`);
   const schedulerOptions = parseSchedulerOptions(process.env, parallelism);
   const tailSchedulerOptions = parseSchedulerOptions(process.env, tailParallelism);
   console.log(
@@ -1197,7 +1244,7 @@ async function main() {
 
   if (buildEnabled) {
     const buildEntries = [];
-    if (scheduledLanes.some((poolLane) => poolLane.live)) {
+    if (scheduledLanes.some((poolLane) => poolLane.needsLiveImage)) {
       buildEntries.push({
         command: liveDockerHarnessScriptCommand("test-live-build-docker.sh"),
         label: "shared live-test image once",

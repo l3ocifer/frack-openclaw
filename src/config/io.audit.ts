@@ -1,5 +1,5 @@
 import path from "node:path";
-import { redactToolPayloadText } from "../logging/redact.js";
+import { redactSecrets, redactToolPayloadText } from "../logging/redact.js";
 import { resolveStateDir } from "./paths.js";
 
 const CONFIG_AUDIT_ARGV_CAP = 8;
@@ -135,7 +135,7 @@ const CONFIG_AUDIT_LOG_FILENAME = "config-audit.jsonl";
 
 export type ConfigWriteAuditResult = "rename" | "copy-fallback" | "failed" | "rejected";
 
-export type ConfigWriteAuditRecord = {
+type ConfigWriteAuditRecord = {
   ts: string;
   source: "config-io";
   event: "config.write";
@@ -227,11 +227,13 @@ export type ConfigObserveAuditRecord = {
   clobberedPath: string | null;
   restoredFromBackup: boolean;
   restoredBackupPath: string | null;
+  restoreErrorCode: string | null;
+  restoreErrorMessage: string | null;
 };
 
-export type ConfigAuditRecord = ConfigWriteAuditRecord | ConfigObserveAuditRecord;
+type ConfigAuditRecord = ConfigWriteAuditRecord | ConfigObserveAuditRecord;
 
-export type ConfigAuditStatMetadata = {
+type ConfigAuditStatMetadata = {
   dev: string | null;
   ino: string | null;
   mode: number | null;
@@ -240,7 +242,7 @@ export type ConfigAuditStatMetadata = {
   gid: number | null;
 };
 
-export type ConfigAuditProcessInfo = {
+type ConfigAuditProcessInfo = {
   pid: number;
   ppid: number;
   cwd: string;
@@ -248,7 +250,7 @@ export type ConfigAuditProcessInfo = {
   execArgv: string[];
 };
 
-export type ConfigWriteAuditRecordBase = Omit<
+type ConfigWriteAuditRecordBase = Omit<
   ConfigWriteAuditRecord,
   | "result"
   | "nextDev"
@@ -430,10 +432,10 @@ type ConfigAuditAppendParams = ConfigAuditAppendContext &
 
 function resolveConfigAuditAppendRecord(params: ConfigAuditAppendParams): ConfigAuditRecord {
   if ("record" in params) {
-    return params.record;
+    return redactSecrets(params.record);
   }
   const { fs: _fs, env: _env, homedir: _homedir, ...record } = params;
-  return record as ConfigAuditRecord;
+  return redactSecrets(record as ConfigAuditRecord);
 }
 
 export async function appendConfigAuditRecord(params: ConfigAuditAppendParams): Promise<void> {

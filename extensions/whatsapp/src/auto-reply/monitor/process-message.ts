@@ -20,7 +20,6 @@ import { getPrimaryIdentityId, getSelfIdentity, getSenderIdentity } from "../../
 import {
   resolveWhatsAppCommandAuthorized,
   resolveWhatsAppInboundPolicy,
-  type ResolvedWhatsAppInboundPolicy,
 } from "../../inbound-policy.js";
 import { newConnectionId } from "../../reconnect.js";
 import { formatError } from "../../session.js";
@@ -49,7 +48,7 @@ import { trackBackgroundTask, updateLastRouteInBackground } from "./last-route.j
 import { buildInboundLine } from "./message-line.js";
 import {
   buildHistoryContextFromEntries,
-  createChannelReplyPipeline,
+  createChannelMessageReplyPipeline,
   formatInboundEnvelope,
   logVerbose,
   normalizeE164,
@@ -244,6 +243,13 @@ export async function processMessage(params: {
         ctx: {
           MediaPaths: [params.msg.mediaPath],
           MediaTypes: params.msg.mediaType ? [params.msg.mediaType] : undefined,
+          From: params.msg.from,
+          To: params.msg.to,
+          Provider: "whatsapp",
+          Surface: "whatsapp",
+          OriginatingChannel: "whatsapp",
+          OriginatingTo: conversationId,
+          AccountId: params.route.accountId,
         },
         cfg: params.cfg,
       });
@@ -381,7 +387,7 @@ export async function processMessage(params: {
         policy: inboundPolicy,
       })
     : undefined;
-  const { onModelSelected, ...replyPipeline } = createChannelReplyPipeline({
+  const { onModelSelected, ...replyPipeline } = createChannelMessageReplyPipeline({
     cfg: params.cfg,
     agentId: params.route.agentId,
     channel: "whatsapp",
@@ -530,10 +536,3 @@ export async function processMessage(params: {
   });
   return didSendReply;
 }
-
-export const __testing = {
-  resolveWhatsAppCommandAuthorized,
-  resolveWhatsAppInboundPolicy: (
-    params: Parameters<typeof resolveWhatsAppInboundPolicy>[0],
-  ): ResolvedWhatsAppInboundPolicy => resolveWhatsAppInboundPolicy(params),
-};

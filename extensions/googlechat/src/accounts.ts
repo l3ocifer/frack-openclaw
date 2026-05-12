@@ -8,11 +8,11 @@ import {
 } from "openclaw/plugin-sdk/account-resolution";
 import { safeParseJsonWithSchema, safeParseWithSchema } from "openclaw/plugin-sdk/extension-shared";
 import { isSecretRef } from "openclaw/plugin-sdk/secret-input";
-import { normalizeOptionalString } from "openclaw/plugin-sdk/text-runtime";
+import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { z } from "zod";
 import type { GoogleChatAccountConfig } from "./types.config.js";
 
-export type GoogleChatCredentialSource = "file" | "inline" | "env" | "none";
+type GoogleChatCredentialSource = "file" | "inline" | "env" | "none";
 
 export type ResolvedGoogleChatAccount = {
   accountId: string;
@@ -38,7 +38,7 @@ const {
 } = createAccountListHelpers("googlechat");
 export { listGoogleChatAccountIds, resolveDefaultGoogleChatAccountId };
 
-export function mergeGoogleChatAccountConfig(
+function mergeGoogleChatAccountConfig(
   cfg: OpenClawConfig,
   accountId: string,
 ): GoogleChatAccountConfig {

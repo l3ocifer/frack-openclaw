@@ -2,7 +2,6 @@ export { getRuntimeConfig } from "../config/config.js";
 export {
   loadSessionStore,
   resolveAgentIdFromSessionKey,
-  resolveMainSessionKey,
   resolveStorePath,
 } from "../config/sessions.js";
 export { callGateway } from "../gateway/call.js";
@@ -17,7 +16,8 @@ export { createBoundDeliveryRouter } from "../infra/outbound/bound-delivery-rout
 export { resolveConversationIdFromTargets } from "../infra/outbound/conversation-id.js";
 export { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
 export {
+  formatEmbeddedPiQueueFailureSummary,
   isEmbeddedPiRunActive,
-  queueEmbeddedPiMessage,
+  queueEmbeddedPiMessageWithOutcome,
   resolveActiveEmbeddedRunSessionId,
 } from "./pi-embedded-runner/runs.js";

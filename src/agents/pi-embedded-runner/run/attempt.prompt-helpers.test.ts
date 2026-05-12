@@ -2,10 +2,20 @@ import { describe, expect, it, vi } from "vitest";
 
 const musicGenerationTaskStatusMocks = vi.hoisted(() => ({
   buildActiveMusicGenerationTaskPromptContextForSession: vi.fn(),
+  buildMusicGenerationTaskStatusDetails: vi.fn(() => ({})),
+  buildMusicGenerationTaskStatusText: vi.fn(() => "Music generation task status"),
+  findActiveMusicGenerationTaskForSession: vi.fn(),
+  MUSIC_GENERATION_TASK_KIND: "music_generation",
 }));
 
 const videoGenerationTaskStatusMocks = vi.hoisted(() => ({
   buildActiveVideoGenerationTaskPromptContextForSession: vi.fn(),
+  buildVideoGenerationTaskStatusDetails: vi.fn(() => ({})),
+  buildVideoGenerationTaskStatusText: vi.fn(() => "Video generation task status"),
+  findActiveVideoGenerationTaskForSession: vi.fn(),
+  getVideoGenerationTaskProviderId: vi.fn(),
+  isActiveVideoGenerationTask: vi.fn(() => false),
+  VIDEO_GENERATION_TASK_KIND: "video_generation",
 }));
 
 const hostHookStateMocks = vi.hoisted(() => ({
@@ -111,7 +121,7 @@ describe("resolvePromptSubmissionSkipReason", () => {
     ).toBeNull();
   });
 
-  it("allows blank prompt on runtimeOnly turns", () => {
+  it("skips blank prompt on runtimeOnly turns", () => {
     expect(
       resolvePromptSubmissionSkipReason({
         prompt: "",
@@ -119,7 +129,7 @@ describe("resolvePromptSubmissionSkipReason", () => {
         runtimeOnly: true,
         imageCount: 0,
       }),
-    ).toBeNull();
+    ).toBe("empty_prompt_history_images");
   });
 
   it("treats undefined runtimeOnly as a visible user submission", () => {

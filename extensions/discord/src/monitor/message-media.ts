@@ -11,7 +11,7 @@ import type { SsrFPolicy } from "openclaw/plugin-sdk/ssrf-runtime";
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
-} from "openclaw/plugin-sdk/text-runtime";
+} from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { Message } from "../internal/discord.js";
 import {
   resolveDiscordMessageSnapshots,
@@ -295,6 +295,7 @@ async function appendResolvedMediaFromAttachments(params: {
         fetched.contentType ?? attachment.content_type,
         "inbound",
         params.maxBytes,
+        attachment.filename,
       );
       params.out.push({
         path: saved.path,
@@ -402,6 +403,7 @@ async function appendResolvedMediaFromStickers(params: {
           fetched.contentType,
           "inbound",
           params.maxBytes,
+          candidate.fileName,
         );
         params.out.push({
           path: saved.path,

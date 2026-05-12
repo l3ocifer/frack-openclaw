@@ -168,20 +168,20 @@ homelab repo):
 
 ### Models
 
-Routed via LiteLLM at `http://litellm.ai.svc.cluster.local:4000/v1`
+Routed via LiteLLM at `http://litellm.inference.svc.cluster.local:4000/v1`
 (also reachable as `https://llm.leopaska.xyz/v1`):
 
 | Alias | When | Backend (today) |
 |---|---|---|
-| `chat` | Default conversational | qwen2.5-coder:32b on alef Ollama (via vllm-chat) |
-| `code` | Code review/generation | falls through to chat (per [`docs/inference-stack.md`](https://github.com/l3ocifer/homelab/blob/main/docs/inference-stack.md) until vllm-coder is unparked) |
-| `long` | Long context (>64k) | falls through to chat until vllm-long is unparked |
+| `chat` | Fleet default — conversational + most agentic work | vllm-chat on thebeast (RTX 4090): QuantTrio Qwen3.5-27B-AWQ-INT4, ~80 tok/s, 20 K input ctx |
+| `long` | Auto-fallback when context exceeds 20 K (multi-file diffs, long sessions) | vllm-long on alef (RTX 3090): Qwen3.5 9B AWQ + DeltaNet, 262 K native ctx |
+| `frontier` | Opt-in only — high-stakes deep dives where quality >> latency | llamacpp-blade-frontier: unsloth Qwen3-Coder 480B-A35B GGUF Q4_K_M on dual Xeon E5-2667 v2, CPU-only, ~3-5 tok/s, 65 K ctx |
 | `embed` | Embeddings for memory | tei-embed |
 | `rerank` | Hybrid search rerank | tei-rerank |
 
-When LiteLLM is unhealthy, I fall back to direct Ollama on
-`thebeast` (which has its own GPU) — but this is rare; LiteLLM has
-been stable since the 2026-04-28 sweep.
+There is no per-host Ollama in the fleet — everything routes through
+the in-cluster LiteLLM proxy. If LiteLLM is unhealthy the whole
+inference plane is down and Frick wakes (it's a P0).
 
 ## My Relationship with Frick and Sancho
 

@@ -89,8 +89,12 @@ spec:
               }
               JSON
               # Per-agent models.json — register the LiteLLM model
-              # catalog so the agent can pick chat/long/code/frontier
-              # without relying on the global model catalog.
+              # catalog so the agent can pick chat/long/frontier without
+              # relying on the global model catalog. Fleet default is
+              # `chat`; long/frontier are opt-in only so a wedged long
+              # backend cannot hang normal agent work.
+              # contextWindow values mirror max_input_tokens in the
+              # in-cluster LiteLLM config (40-litellm-config.yaml).
               cat > /agent-state/models.json <<JSON
               {
                 "providers": {
@@ -99,16 +103,15 @@ spec:
                     "api": "openai-completions",
                     "apiKey": "${LITELLM_API_KEY}",
                     "models": [
-                      {"id":"chat","name":"LiteLLM chat","contextWindow":32768,"maxTokens":8192,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0}},
-                      {"id":"long","name":"LiteLLM long","contextWindow":131072,"maxTokens":8192,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0}},
-                      {"id":"code","name":"LiteLLM code","contextWindow":32768,"maxTokens":8192,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0}},
-                      {"id":"frontier","name":"LiteLLM frontier","contextWindow":200000,"maxTokens":8192,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0}}
+                      {"id":"chat","name":"LiteLLM chat (vllm-chat / Qwen3.5 27B AWQ)","contextWindow":20480,"maxTokens":4096,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0}},
+                      {"id":"long","name":"LiteLLM long (vllm-long / Qwen3.5 9B AWQ + DeltaNet)","contextWindow":262144,"maxTokens":8192,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0}},
+                      {"id":"frontier","name":"LiteLLM frontier (Qwen3-Coder 480B MoE, opt-in)","contextWindow":65536,"maxTokens":8192,"input":["text"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0}}
                     ]
                   }
                 },
                 "defaults": {
-                  "primary": "litellm/long",
-                  "fallbacks": ["litellm/chat"]
+                  "primary": "litellm/chat",
+                  "fallbacks": []
                 }
               }
               JSON

@@ -39,13 +39,10 @@ What's wired up, where it lives, and how to use it. Lives in
 `http://litellm.ai.svc.cluster.local:4000/v1`. The `LITELLM_API_KEY`
 env (sealed in `frack-secrets`) is the namespace virtual key.
 
-When LiteLLM is unhealthy, fall back to direct Ollama on `thebeast`:
-
-```bash
-# Manual fallback
-export OPENCLAW_MODEL_PROVIDER=ollama
-openclaw "what is going on"
-```
+If LiteLLM itself is unhealthy the whole inference plane is down and
+there is no usable fallback — that's a P0 the cluster ops agent
+(Frick) wakes for. There is no per-host Ollama anymore; everything
+routes through the in-cluster LiteLLM proxy.
 
 ## Channels
 

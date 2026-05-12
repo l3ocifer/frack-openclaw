@@ -41,29 +41,29 @@
         models: [
           {
             id: "chat",
-            name: "LiteLLM chat (qwen2.5-coder:32b via vllm-chat)",
+            name: "Frack default chat (vllm-chat / Qwen3.5 27B AWQ)",
             reasoning: false,
             input: ["text"],
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-            contextWindow: 32768,
-            maxTokens: 8192,
-          },
-          {
-            id: "code",
-            name: "LiteLLM code (falls through to chat until vllm-coder unparked)",
-            reasoning: false,
-            input: ["text"],
-            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-            contextWindow: 32768,
-            maxTokens: 8192,
+            contextWindow: 20480,
+            maxTokens: 4096,
           },
           {
             id: "long",
-            name: "LiteLLM long (falls through to chat until vllm-long unparked)",
+            name: "Long context (vllm-long / Qwen3.5 9B AWQ + DeltaNet, 262K)",
             reasoning: false,
             input: ["text"],
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-            contextWindow: 131072,
+            contextWindow: 262144,
+            maxTokens: 8192,
+          },
+          {
+            id: "frontier",
+            name: "Frontier (Qwen3-Coder 480B MoE on blade, slow / opt-in)",
+            reasoning: true,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            contextWindow: 65536,
             maxTokens: 8192,
           },
           {
@@ -83,25 +83,6 @@
             contextWindow: 8192,
           }
         ]
-      },
-      // Ollama on thebeast — direct fallback when LiteLLM is unhealthy.
-      // The pod can reach the host via the K3s host network or the
-      // explicit nodeSelector + hostNetwork pair (TBD on best path).
-      ollama: {
-        baseUrl: "http://thebeast.local:11434/v1",
-        apiKey: "ollama-local",
-        api: "openai-completions",
-        models: [
-          {
-            id: "qwen3-coder:30b",
-            name: "Qwen3 Coder 30B (MoE) — local fallback",
-            reasoning: false,
-            input: ["text"],
-            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-            contextWindow: 262144,
-            maxTokens: 8192,
-          }
-        ]
       }
     }
   },
@@ -109,8 +90,11 @@
   agents: {
     defaults: {
       model: {
+        // Fleet default: chat (vllm-chat / Qwen3.5 27B AWQ on thebeast).
+        // Long/frontier are opt-in per-task only; do not auto-fallback to
+        // long because a wedged long backend can hang normal agent work.
         primary: "litellm/chat",
-        fallbacks: ["litellm/long", "ollama/qwen3-coder:30b"],
+        fallbacks: [],
       },
       // NOTE: previous `agentRuntime: { defaults: {...} }` was rejected
       // (AgentRuntimePolicySchema only accepts {id, fallback}). The main

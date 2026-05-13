@@ -15,6 +15,10 @@ spec:
       port: 18789
       targetPort: gateway
       protocol: TCP
+    - name: a2a
+      port: 8443
+      targetPort: gateway
+      protocol: TCP
     - name: metrics
       port: 9100
       targetPort: metrics

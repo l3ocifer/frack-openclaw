@@ -92,8 +92,9 @@
           //   - quarterly financial summary / tax-prep extracts
           //   - changelog/release-notes synthesis across many PRs
           // Routine ops stays on `chat`. Bridge policy enforces both
-          // the household 7-day quota and Frack's 12% share. On 429
-          // LiteLLM cascades sonnet→chat→frontier, opus→frontier→long.
+          // the household 7-day quota and Frack's 12% share. The agent
+          // may choose any Claude Code model at call time via
+          // claude-code/<cli-model>; on 429 LiteLLM falls back locally.
           {
             id: "claude-sonnet-max",
             name: "Claude Sonnet 4.6 via household Max subscription",
@@ -106,6 +107,15 @@
           {
             id: "claude-opus-max",
             name: "Claude Opus 4.7 via household Max subscription",
+            reasoning: true,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            contextWindow: 200000,
+            maxTokens: 8192,
+          },
+          {
+            id: "claude-code/*",
+            name: "Claude Code model selected at call time",
             reasoning: true,
             input: ["text"],
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },

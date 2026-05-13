@@ -35,6 +35,7 @@ minimumReleaseAgeExclude:
   - "rolldown"
   - "sqlite-vec"
   - "sqlite-vec-*"
+  - "@copilotkit/aimock"
 
 nodeLinker: hoisted
 blockExoticSubdeps: true

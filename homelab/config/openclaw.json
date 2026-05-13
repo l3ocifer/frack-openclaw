@@ -81,6 +81,36 @@
             input: ["text"],
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
             contextWindow: 8192,
+          },
+
+          // ─── Claude Max (via household claude-bridge) ──────────────
+          // Tier-4 budget share: 12% of weekly Claude pool. Frack runs
+          // the production business; the budget is meant for cases
+          // where customer-facing wording, financial calculations, or
+          // policy-sensitive replies need the bigger model:
+          //   - draft replies to escalated customer emails
+          //   - quarterly financial summary / tax-prep extracts
+          //   - changelog/release-notes synthesis across many PRs
+          // Routine ops stays on `chat`. Bridge policy enforces both
+          // the household 7-day quota and Frack's 12% share. On 429
+          // LiteLLM cascades sonnet→chat→frontier, opus→frontier→long.
+          {
+            id: "claude-sonnet-max",
+            name: "Claude Sonnet 4.6 via household Max subscription",
+            reasoning: true,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            contextWindow: 200000,
+            maxTokens: 8192,
+          },
+          {
+            id: "claude-opus-max",
+            name: "Claude Opus 4.7 via household Max subscription",
+            reasoning: true,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            contextWindow: 200000,
+            maxTokens: 8192,
           }
         ]
       }

@@ -41,6 +41,8 @@ import type { ReadinessChecker } from "./server/readiness.js";
 import type { GatewayTlsRuntime } from "./server/tls.js";
 import type { GatewayWsClient } from "./server/ws-types.js";
 
+type GatewayA2aRequestHandler = (req: IncomingMessage, res: ServerResponse) => Promise<boolean>;
+
 type GatewayPluginRequestHandler = (
   req: IncomingMessage,
   res: ServerResponse,
@@ -90,6 +92,8 @@ export async function createGatewayRuntimeState(params: {
   logHooks: ReturnType<typeof createSubsystemLogger>;
   logPlugins: ReturnType<typeof createSubsystemLogger>;
   getReadiness?: ReadinessChecker;
+  /** Native A2A JSON-RPC ingress (agent-bus, cross-agent handoffs). */
+  handleA2aRequest?: GatewayA2aRequestHandler;
 }): Promise<{
   releasePluginRouteRegistry: () => void;
   httpServer: HttpServer;
@@ -240,6 +244,7 @@ export async function createGatewayRuntimeState(params: {
         openResponsesConfig: params.openResponsesConfig,
         strictTransportSecurityHeader: params.strictTransportSecurityHeader,
         handleHooksRequest,
+        handleA2aRequest: params.handleA2aRequest,
         handlePluginRequest,
         shouldEnforcePluginGatewayAuth,
         resolvePluginNodeCapabilityRoute,

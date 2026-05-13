@@ -1,3 +1,4 @@
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { monitorEventLoopDelay, performance } from "node:perf_hooks";
 import { getActiveEmbeddedRunCount } from "../agents/pi-embedded-runner/run-state.js";
 import { getTotalPendingReplies } from "../auto-reply/reply/dispatcher-registry.js";
@@ -54,6 +55,7 @@ import {
   clearSecretsRuntimeSnapshot,
   getActiveSecretsRuntimeSnapshot,
 } from "../secrets/runtime.js";
+import { resolveAssistantIdentity } from "./assistant-identity.js";
 import { createAuthRateLimiter, type AuthRateLimiter } from "./auth-rate-limit.js";
 import { resolveGatewayAuth } from "./auth.js";
 import {
@@ -510,6 +512,88 @@ const runDefaultSetupWizard: SetupWizardRunner = async (...args) => {
   return runSetupWizard(...args);
 };
 
+async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  if (chunks.length === 0) {
+    return {};
+  }
+  const raw = Buffer.concat(chunks).toString("utf8");
+  return raw.trim() ? (JSON.parse(raw) as Record<string, unknown>) : {};
+}
+
+function writeJson(res: ServerResponse, statusCode: number, body: unknown): void {
+  const payload = Buffer.from(JSON.stringify(body));
+  res.statusCode = statusCode;
+  res.setHeader("Content-Type", "application/json");
+  res.setHeader("Content-Length", String(payload.length));
+  res.end(payload);
+}
+
+function a2aParams(body: Record<string, unknown>): Record<string, unknown> {
+  return body.params && typeof body.params === "object" && !Array.isArray(body.params)
+    ? (body.params as Record<string, unknown>)
+    : body;
+}
+
+function a2aText(body: Record<string, unknown>): string {
+  const params = a2aParams(body);
+  const message =
+    params.message && typeof params.message === "object" && !Array.isArray(params.message)
+      ? (params.message as Record<string, unknown>)
+      : params;
+  const parts = Array.isArray(message.parts) ? message.parts : [];
+  const chunks = parts
+    .filter((part): part is Record<string, unknown> => typeof part === "object" && part !== null)
+    .map((part) => (typeof part.text === "string" ? part.text : ""))
+    .filter(Boolean);
+  if (chunks.length > 0) {
+    return chunks.join("\n\n");
+  }
+  for (const key of ["text", "goal"]) {
+    const value = params[key] ?? body[key];
+    if (typeof value === "string" && value.trim()) {
+      return value;
+    }
+  }
+  return JSON.stringify(body);
+}
+
+function a2aTaskId(body: Record<string, unknown>): string {
+  const params = a2aParams(body);
+  for (const key of ["task_id", "taskId", "id"]) {
+    const value = params[key] ?? body[key];
+    if (typeof value === "string" && value.trim()) {
+      return value;
+    }
+  }
+  return `a2a-${Date.now().toString(36)}`;
+}
+
+function a2aSourceAgent(body: Record<string, unknown>): string {
+  const params = a2aParams(body);
+  const metadata =
+    params.metadata && typeof params.metadata === "object" && !Array.isArray(params.metadata)
+      ? (params.metadata as Record<string, unknown>)
+      : {};
+  for (const value of [body.source_agent, body.from, metadata.source_agent]) {
+    if (typeof value === "string" && value.trim()) {
+      return value;
+    }
+  }
+  return "a2a";
+}
+
+function a2aJsonRpcResult(id: unknown, result: unknown): Record<string, unknown> {
+  return {
+    jsonrpc: "2.0",
+    id: id ?? null,
+    result,
+  };
+}
+
 export async function startGatewayServer(
   port = 18789,
   opts: GatewayServerOptions = {},
@@ -806,6 +890,8 @@ export async function startGatewayServer(
       isTruthyEnvValue(process.env.OPENCLAW_SKIP_PROVIDERS),
   });
   log.info("starting HTTP server...");
+  let handleA2aRequest: ((req: IncomingMessage, res: ServerResponse) => Promise<boolean>) | null =
+    null;
   const {
     releasePluginRouteRegistry,
     httpServer,
@@ -845,6 +931,8 @@ export async function startGatewayServer(
       gatewayTls,
       getResolvedAuth,
       hooksConfig: () => runtimeState?.hooksConfig ?? initialHooksConfig,
+      handleA2aRequest: (req, res) =>
+        handleA2aRequest ? handleA2aRequest(req, res) : Promise.resolve(false),
       getHookClientIpConfig: () => runtimeState?.hookClientIpConfig ?? initialHookClientIpConfig,
       pluginRegistry,
       pinChannelRegistry: !minimalTestGateway,
@@ -1296,6 +1384,83 @@ export async function startGatewayServer(
       unavailableGatewayMethods,
       broadcastVoiceWakeRoutingChanged,
     });
+
+    handleA2aRequest = async (req, res) => {
+      const url = new URL(req.url ?? "/", "http://localhost");
+      if (req.method === "GET" && url.pathname.startsWith("/.well-known/")) {
+        const cfg = getRuntimeConfig();
+        const agentId = resolveAssistantIdentity({ cfg }).agentId;
+        writeJson(res, 200, {
+          name: agentId,
+          description: `${agentId} OpenClaw native A2A endpoint`,
+          url: `http://${agentId}.agents-shared.svc.cluster.local:8443`,
+          version: "1.0.0",
+          protocolVersion: "0.3.0",
+          preferredTransport: "JSONRPC",
+          capabilities: {
+            streaming: false,
+            pushNotifications: false,
+            stateTransitionHistory: false,
+          },
+          defaultInputModes: ["text/plain", "application/json"],
+          defaultOutputModes: ["application/json"],
+          skills: [
+            {
+              id: "message-send",
+              name: "message/send",
+              description: "Send an A2A handoff into the native OpenClaw agent runtime.",
+            },
+          ],
+        });
+        return true;
+      }
+      if (req.method !== "POST") {
+        writeJson(res, 405, { error: "method not allowed" });
+        return true;
+      }
+      const body = await readJsonBody(req);
+      const taskId = a2aTaskId(body);
+      if (url.pathname === "/a2a/v1/tasks/get") {
+        writeJson(
+          res,
+          200,
+          a2aJsonRpcResult(body.id, {
+            id: taskId,
+            status: { state: "submitted" },
+          }),
+        );
+        return true;
+      }
+      const sourceAgent = a2aSourceAgent(body);
+      const message = a2aText(body);
+      const { chatHandlers } = await import("./server-methods/chat.js");
+      let response: { ok: boolean; payload?: unknown; error?: unknown } | null = null;
+      await chatHandlers["chat.send"]({
+        req: { type: "req", id: `a2a-${taskId}`, method: "chat.send", params: {} },
+        params: {
+          sessionKey: `agent:main:a2a:${sourceAgent}`,
+          message,
+          idempotencyKey: taskId,
+        },
+        client: null,
+        isWebchatConnect: () => false,
+        respond: (ok, payload, error) => {
+          response = { ok, payload, error };
+        },
+        context: gatewayRequestContext,
+      });
+      const accepted = response?.ok === true;
+      writeJson(
+        res,
+        accepted ? 202 : 500,
+        a2aJsonRpcResult(body.id, {
+          id: taskId,
+          status: { state: accepted ? "submitted" : "failed" },
+          details: accepted ? response?.payload : response?.error,
+        }),
+      );
+      return true;
+    };
 
     const fallbackGatewayContextCleanup: unknown = setFallbackGatewayContextResolver(
       () => gatewayRequestContext,

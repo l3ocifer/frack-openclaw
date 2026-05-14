@@ -1,0 +1,46 @@
+name: Forgejo - Build & push homelab image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "homelab/Dockerfile"
+      - "homelab/image/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "src/**"
+      - "extensions/**"
+      - "ui/**"
+      - "tsconfig*.json"
+      - ".forgejo/workflows/homelab-build.yml"
+  workflow_dispatch: {}
+
+env:
+  REGISTRY: git.leopaska.xyz
+  IMAGE_NAME: leo/frack-openclaw
+
+jobs:
+  build-and-push:
+    runs-on: docker
+
+    steps:
+      - name: Build and push
+        env:
+          TOKEN: ${{ secrets.FORGEJOPACKAGES }}
+          DOCKER_HOST: tcp://172.17.0.1:2375
+        run: |
+          set -eu
+          apk add --no-cache git
+          git clone --depth 1 --branch "${GITHUB_REF_NAME}" \
+            "http://oauth2:${TOKEN}@forgejo-http.forgejo.svc.cluster.local:3000/${GITHUB_REPOSITORY}.git" repo
+          short_sha="$(printf '%s' "${GITHUB_SHA}" | cut -c1-7)"
+          echo "${TOKEN}" | docker login "${REGISTRY}" -u "${GITHUB_ACTOR}" --password-stdin
+          docker buildx create --use --name homelab-builder 2>/dev/null || docker buildx use homelab-builder
+          docker buildx build \
+            --platform linux/amd64 \
+            --push \
+            --tag "${REGISTRY}/${IMAGE_NAME}:homelab" \
+            --tag "${REGISTRY}/${IMAGE_NAME}:${short_sha}" \
+            --file repo/homelab/Dockerfile \
+            repo

@@ -191,7 +191,7 @@ spec:
             - { name: openclaw-config, mountPath: /openclaw-config-src, readOnly: true }
       containers:
         - name: openclaw
-          image: ghcr.io/l3ocifer/frack-openclaw:homelab
+          image: git.leopaska.xyz/leo/frack-openclaw:homelab
           imagePullPolicy: Always
           command: ["node", "/opt/openclaw/openclaw.mjs"]
           args:
@@ -320,4 +320,4 @@ spec:
         - { name: graph-puck,      persistentVolumeClaim: { claimName: puck-graph } }
         - { name: graph-leo,       persistentVolumeClaim: { claimName: leo-graph } }
       imagePullSecrets:
-        - name: ghcr-credentials
+        - name: forgejo-registry-credentials

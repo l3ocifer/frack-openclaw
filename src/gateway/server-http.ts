@@ -63,6 +63,8 @@ type PluginHttpUpgradeHandler = (
   },
 ) => Promise<boolean>;
 
+type A2aHttpRequestHandler = (req: IncomingMessage, res: ServerResponse) => Promise<boolean>;
+
 type ResolvePluginNodeCapabilityRoute = (
   pathContext: PluginRoutePathContext,
 ) => PluginNodeCapabilitySurface | undefined;
@@ -229,6 +231,17 @@ function isSessionKillPath(pathname: string): boolean {
 
 function isSessionHistoryPath(pathname: string): boolean {
   return /^\/sessions\/[^/]+\/history$/.test(pathname);
+}
+
+function isA2aPath(pathname: string): boolean {
+  return (
+    pathname === "/.well-known/agent-card.json" ||
+    pathname === "/.well-known/agent.json" ||
+    pathname === "/a2a" ||
+    pathname === "/a2a/v1/message:send" ||
+    pathname === "/a2a/v1/message/send" ||
+    pathname === "/a2a/v1/tasks/get"
+  );
 }
 
 function shouldEnforceDefaultPluginGatewayAuth(pathContext: PluginRoutePathContext): boolean {
@@ -473,6 +486,7 @@ export function createGatewayHttpServer(opts: {
   openResponsesConfig?: import("../config/types.gateway.js").GatewayHttpResponsesConfig;
   strictTransportSecurityHeader?: string;
   handleHooksRequest: HooksRequestHandler;
+  handleA2aRequest?: A2aHttpRequestHandler;
   handlePluginRequest?: PluginHttpRequestHandler;
   handlePluginUpgrade?: PluginHttpUpgradeHandler;
   shouldEnforcePluginGatewayAuth?: (pathContext: PluginRoutePathContext) => boolean;
@@ -496,6 +510,7 @@ export function createGatewayHttpServer(opts: {
     openResponsesConfig,
     strictTransportSecurityHeader,
     handleHooksRequest,
+    handleA2aRequest,
     handlePluginRequest,
     shouldEnforcePluginGatewayAuth,
     resolvePluginNodeCapabilityRoute,
@@ -580,6 +595,12 @@ export function createGatewayHttpServer(opts: {
           run: () => handleHooksRequest(req, res),
         },
       ];
+      if (handleA2aRequest && isA2aPath(scopedRequestPath)) {
+        requestStages.push({
+          name: "a2a",
+          run: () => handleA2aRequest(req, res),
+        });
+      }
       if (openAiCompatEnabled && isOpenAiModelsPath(scopedRequestPath)) {
         requestStages.push({
           name: "models",

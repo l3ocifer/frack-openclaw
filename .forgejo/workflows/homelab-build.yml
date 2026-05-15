@@ -17,7 +17,8 @@ on:
   workflow_dispatch: {}
 
 env:
-  REGISTRY: git.leopaska.xyz
+  REGISTRY_PUBLIC: git.leopaska.xyz
+  REGISTRY_INTERNAL: forgejo-http.forgejo.svc.cluster.local:3000
   IMAGE_NAME: leo/frack-openclaw
 
 jobs:
@@ -25,22 +26,29 @@ jobs:
     runs-on: docker
 
     steps:
-      - name: Build and push
+      - name: Build image and push via skopeo
         env:
           TOKEN: ${{ secrets.FORGEJOPACKAGES }}
-          DOCKER_HOST: tcp://172.17.0.1:2375
         run: |
           set -eu
-          apk add --no-cache git
+          # Forgejo registry over public host has a Docker 27+ chunked-upload bug
+          # ("bad range format: 0--1"). Build locally, then push with skopeo over
+          # cluster-internal HTTP which avoids the bug entirely. DOCKER_HOST is
+          # already set by the runner pod to the sibling dind sidecar.
+          apk add --no-cache git skopeo
           git clone --depth 1 --branch "${GITHUB_REF_NAME}" \
-            "http://oauth2:${TOKEN}@forgejo-http.forgejo.svc.cluster.local:3000/${GITHUB_REPOSITORY}.git" repo
+            "http://oauth2:${TOKEN}@${REGISTRY_INTERNAL}/${GITHUB_REPOSITORY}.git" repo
           short_sha="$(printf '%s' "${GITHUB_SHA}" | cut -c1-7)"
-          echo "${TOKEN}" | docker login "${REGISTRY}" -u "${GITHUB_ACTOR}" --password-stdin
-          docker buildx create --use --name homelab-builder 2>/dev/null || docker buildx use homelab-builder
-          docker buildx build \
-            --platform linux/amd64 \
-            --push \
-            --tag "${REGISTRY}/${IMAGE_NAME}:homelab" \
-            --tag "${REGISTRY}/${IMAGE_NAME}:${short_sha}" \
+
+          docker build \
+            --tag "${REGISTRY_PUBLIC}/${IMAGE_NAME}:homelab" \
+            --tag "${REGISTRY_PUBLIC}/${IMAGE_NAME}:${short_sha}" \
             --file repo/homelab/Dockerfile \
             repo
+
+          for tag in homelab "${short_sha}"; do
+            skopeo copy --dest-tls-verify=false \
+              --dest-creds "${GITHUB_ACTOR}:${TOKEN}" \
+              "docker-daemon:${REGISTRY_PUBLIC}/${IMAGE_NAME}:${tag}" \
+              "docker://${REGISTRY_INTERNAL}/${IMAGE_NAME}:${tag}"
+          done

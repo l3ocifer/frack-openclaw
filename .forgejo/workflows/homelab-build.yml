@@ -28,10 +28,13 @@ jobs:
     steps:
       - name: Build image and push via skopeo
         env:
-          # Forgejo auto-issues this short-lived workflow token with packages:write
-          # scope for the current repo. Use it instead of a long-lived user PAT
-          # secret to avoid scope-drift surprises across rotations.
-          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # FORGEJOPACKAGES is a leo-owned PAT scoped to `read:package,write:package`
+          # (rotated 2026-05-15 after the previous secret lost packages scope and
+          # builds 638/687/689 all failed at skopeo push with
+          # `authentication required` / "reqPackageAccess"). We can't use
+          # `${{ secrets.GITHUB_TOKEN }}` because Forgejo's auto-issued workflow
+          # token doesn't include `write:package` in its JWT scopes.
+          TOKEN: ${{ secrets.FORGEJOPACKAGES }}
           # docker:27.5.1-cli job container reaches the pod's dind sidecar via
           # the bridge gateway, not via "localhost" which is the runner's view.
           DOCKER_HOST: tcp://172.17.0.1:2375

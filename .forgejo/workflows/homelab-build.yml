@@ -28,7 +28,10 @@ jobs:
     steps:
       - name: Build image and push via skopeo
         env:
-          TOKEN: ${{ secrets.FORGEJOPACKAGES }}
+          # Forgejo auto-issues this short-lived workflow token with packages:write
+          # scope for the current repo. Use it instead of a long-lived user PAT
+          # secret to avoid scope-drift surprises across rotations.
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # docker:27.5.1-cli job container reaches the pod's dind sidecar via
           # the bridge gateway, not via "localhost" which is the runner's view.
           DOCKER_HOST: tcp://172.17.0.1:2375

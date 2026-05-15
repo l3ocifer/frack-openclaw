@@ -54,16 +54,15 @@ jobs:
             --file repo/homelab/Dockerfile \
             repo
 
-          # Debug: surface actor / token sanity (mask token value, just print length).
-          echo "DEBUG GITHUB_ACTOR=${GITHUB_ACTOR}"
-          echo "DEBUG TOKEN_LEN=${#TOKEN}"
-
           # The registry username must match the Forgejo user that owns the
           # FORGEJOPACKAGES PAT (leo). GITHUB_ACTOR varies (workflow_dispatch
           # caller, push committer, or a bot identity); hardcode the owner.
           for tag in homelab "${short_sha}"; do
+            archive="/tmp/${IMAGE_NAME##*/}-${tag}.tar"
+            docker save "${REGISTRY_PUBLIC}/${IMAGE_NAME}:${tag}" -o "${archive}"
             skopeo copy --dest-tls-verify=false \
               --dest-creds "leo:${TOKEN}" \
-              "docker-daemon:${REGISTRY_PUBLIC}/${IMAGE_NAME}:${tag}" \
+              "docker-archive:${archive}:${REGISTRY_PUBLIC}/${IMAGE_NAME}:${tag}" \
               "docker://${REGISTRY_INTERNAL}/${IMAGE_NAME}:${tag}"
+            rm -f "${archive}"
           done

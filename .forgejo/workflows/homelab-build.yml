@@ -28,12 +28,12 @@ jobs:
     steps:
       - name: Build image and push via skopeo
         env:
-          # FORGEJOPACKAGES is a leo-owned PAT scoped to `read:package,write:package`
+          # FORGEJOPACKAGES is a leo-owned PAT scoped to read:package,write:package
           # (rotated 2026-05-15 after the previous secret lost packages scope and
           # builds 638/687/689 all failed at skopeo push with
-          # `authentication required` / "reqPackageAccess"). We can't use
-          # `${{ secrets.GITHUB_TOKEN }}` because Forgejo's auto-issued workflow
-          # token doesn't include `write:package` in its JWT scopes.
+          # "authentication required" / "reqPackageAccess"). Forgejo's auto-issued
+          # workflow token does NOT include write:package in its JWT scopes, so we
+          # cannot use the workflow auto-token here.
           TOKEN: ${{ secrets.FORGEJOPACKAGES }}
           # docker:27.5.1-cli job container reaches the pod's dind sidecar via
           # the bridge gateway, not via "localhost" which is the runner's view.

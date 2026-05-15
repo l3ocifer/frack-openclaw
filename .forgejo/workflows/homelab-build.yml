@@ -29,12 +29,14 @@ jobs:
       - name: Build image and push via skopeo
         env:
           TOKEN: ${{ secrets.FORGEJOPACKAGES }}
+          # docker:27.5.1-cli job container reaches the pod's dind sidecar via
+          # the bridge gateway, not via "localhost" which is the runner's view.
+          DOCKER_HOST: tcp://172.17.0.1:2375
         run: |
           set -eu
           # Forgejo registry over public host has a Docker 27+ chunked-upload bug
           # ("bad range format: 0--1"). Build locally, then push with skopeo over
-          # cluster-internal HTTP which avoids the bug entirely. DOCKER_HOST is
-          # already set by the runner pod to the sibling dind sidecar.
+          # cluster-internal HTTP which avoids the bug entirely.
           apk add --no-cache git skopeo
           git clone --depth 1 --branch "${GITHUB_REF_NAME}" \
             "http://oauth2:${TOKEN}@${REGISTRY_INTERNAL}/${GITHUB_REPOSITORY}.git" repo

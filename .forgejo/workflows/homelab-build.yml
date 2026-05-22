@@ -28,24 +28,19 @@ jobs:
     steps:
       - name: Build image and push via skopeo
         env:
-          # FORGEJOPACKAGES is a leo-owned PAT scoped to read:package,write:package
-          # (rotated 2026-05-15 after the previous secret lost packages scope and
-          # builds 638/687/689 all failed at skopeo push with
-          # "authentication required" / "reqPackageAccess"). Forgejo's auto-issued
-          # workflow token does NOT include write:package in its JWT scopes, so we
-          # cannot use the workflow auto-token here.
-          TOKEN: ${{ secrets.FORGEJOPACKAGES }}
-          # docker:27.5.1-cli job container reaches the pod's dind sidecar via
-          # the bridge gateway, not via "localhost" which is the runner's view.
+          # The workflow token reads the repo; package writes use the shared
+          # leo-owned PAT from Forgejo Actions secrets.
+          REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PACKAGE_TOKEN: ${{ secrets.FORGEJOPACKAGES }}
+          # docker:27.5.1-cli reaches the dind sidecar via the bridge gateway.
           DOCKER_HOST: tcp://172.17.0.1:2375
         run: |
           set -eu
-          # Forgejo registry over public host has a Docker 27+ chunked-upload bug
-          # ("bad range format: 0--1"). Build locally, then push with skopeo over
-          # cluster-internal HTTP which avoids the bug entirely.
+          # Push over the cluster-internal Forgejo URL to avoid public-registry
+          # chunked upload issues seen with Docker 27+.
           apk add --no-cache git skopeo
           git clone --depth 1 --branch "${GITHUB_REF_NAME}" \
-            "http://oauth2:${TOKEN}@${REGISTRY_INTERNAL}/${GITHUB_REPOSITORY}.git" repo
+            "http://${GITHUB_ACTOR}:${REPO_TOKEN}@${REGISTRY_INTERNAL}/${GITHUB_REPOSITORY}.git" repo
           short_sha="$(printf '%s' "${GITHUB_SHA}" | cut -c1-7)"
 
           docker build \
@@ -54,14 +49,11 @@ jobs:
             --file repo/homelab/Dockerfile \
             repo
 
-          # The registry username must match the Forgejo user that owns the
-          # FORGEJOPACKAGES PAT (leo). GITHUB_ACTOR varies (workflow_dispatch
-          # caller, push committer, or a bot identity); hardcode the owner.
           for tag in homelab "${short_sha}"; do
             archive="/tmp/${IMAGE_NAME##*/}-${tag}.tar"
             docker save "${REGISTRY_PUBLIC}/${IMAGE_NAME}:${tag}" -o "${archive}"
             skopeo copy --dest-tls-verify=false \
-              --dest-creds "leo:${TOKEN}" \
+              --dest-creds "leo:${PACKAGE_TOKEN}" \
               "docker-archive:${archive}:${REGISTRY_PUBLIC}/${IMAGE_NAME}:${tag}" \
               "docker://${REGISTRY_INTERNAL}/${IMAGE_NAME}:${tag}"
             rm -f "${archive}"

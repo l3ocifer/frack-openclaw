@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "@pierre/diffs": "1.1.22",
-    "@pierre/theme": "0.0.29",
+    "@pierre/theme": "1.0.3",
     "playwright-core": "1.60.0",
     "typebox": "1.1.38",
     "zod": "4.4.3"

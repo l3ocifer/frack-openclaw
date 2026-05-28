@@ -22,6 +22,11 @@
         baseUrl: "http://litellm.inference.svc.cluster.local:4000/v1",
         apiKey: { source: "env", provider: "default", id: "OPENAI_API_KEY" },
         api: "openai-completions",
+        // Cluster-internal LiteLLM resolves to a private Service IP; the
+        // model-fetch SSRF guard blocks private/internal targets unless we
+        // opt in for this operator-controlled endpoint. Without this the
+        // embedded harness fails every call with SsrFBlockedError.
+        request: { allowPrivateNetwork: true },
         models: [
           {
             id: "gpt-5.5",
@@ -38,6 +43,9 @@
         baseUrl: "http://litellm.inference.svc.cluster.local:4000/v1",
         apiKey: { source: "env", provider: "default", id: "LITELLM_API_KEY" },
         api: "openai-completions",
+        // See note on the openai provider above — allow the SSRF guard to
+        // reach the cluster-internal LiteLLM Service (private ClusterIP).
+        request: { allowPrivateNetwork: true },
         models: [
           {
             id: "chat",

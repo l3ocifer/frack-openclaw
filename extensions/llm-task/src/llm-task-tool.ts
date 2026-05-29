@@ -4,7 +4,11 @@ import {
   type JsonSchemaObject,
   validateJsonSchemaValue,
 } from "openclaw/plugin-sdk/json-schema-runtime";
-import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
+import {
+  asFiniteNumber,
+  asPositiveSafeInteger,
+  normalizeOptionalString,
+} from "openclaw/plugin-sdk/string-coerce-runtime";
 import { Type } from "typebox";
 import { resolvePreferredOpenClawTmpDir, withTempWorkspace } from "../api.js";
 import type { OpenClawPluginApi } from "../api.js";
@@ -106,6 +110,29 @@ type LlmTaskParams = {
 
 type ThinkingPolicy = ReturnType<OpenClawPluginApi["runtime"]["agent"]["resolveThinkingPolicy"]>;
 
+export const llmTaskToolDefinition = {
+  name: "llm-task",
+  label: "LLM Task",
+  description:
+    "Run a generic JSON-only LLM task and return schema-validated JSON. Designed for orchestration from Lobster workflows via openclaw.invoke.",
+  parameters: Type.Object({
+    prompt: Type.String({ description: "Task instruction for the LLM." }),
+    input: Type.Optional(Type.Unknown({ description: "Optional input payload for the task." })),
+    schema: Type.Optional(
+      Type.Unknown({ description: "Optional JSON Schema to validate the returned JSON." }),
+    ),
+    provider: Type.Optional(
+      Type.String({ description: "Provider override (e.g. openai-codex, anthropic)." }),
+    ),
+    model: Type.Optional(Type.String({ description: "Model id override." })),
+    thinking: Type.Optional(Type.String({ description: "Thinking level override." })),
+    authProfileId: Type.Optional(Type.String({ description: "Auth profile override." })),
+    temperature: Type.Optional(Type.Number({ description: "Best-effort temperature override." })),
+    maxTokens: Type.Optional(Type.Number({ description: "Best-effort maxTokens override." })),
+    timeoutMs: Type.Optional(Type.Number({ description: "Timeout for the LLM run." })),
+  }),
+};
+
 function formatThinkingPolicy(policy: ThinkingPolicy): string {
   return policy.levels.map((level) => level.label).join(", ");
 }
@@ -119,26 +146,7 @@ function supportsThinkingPolicyLevel(
 
 export function createLlmTaskTool(api: OpenClawPluginApi) {
   return {
-    name: "llm-task",
-    label: "LLM Task",
-    description:
-      "Run a generic JSON-only LLM task and return schema-validated JSON. Designed for orchestration from Lobster workflows via openclaw.invoke.",
-    parameters: Type.Object({
-      prompt: Type.String({ description: "Task instruction for the LLM." }),
-      input: Type.Optional(Type.Unknown({ description: "Optional input payload for the task." })),
-      schema: Type.Optional(
-        Type.Unknown({ description: "Optional JSON Schema to validate the returned JSON." }),
-      ),
-      provider: Type.Optional(
-        Type.String({ description: "Provider override (e.g. openai-codex, anthropic)." }),
-      ),
-      model: Type.Optional(Type.String({ description: "Model id override." })),
-      thinking: Type.Optional(Type.String({ description: "Thinking level override." })),
-      authProfileId: Type.Optional(Type.String({ description: "Auth profile override." })),
-      temperature: Type.Optional(Type.Number({ description: "Best-effort temperature override." })),
-      maxTokens: Type.Optional(Type.Number({ description: "Best-effort maxTokens override." })),
-      timeoutMs: Type.Optional(Type.Number({ description: "Timeout for the LLM run." })),
-    }),
+    ...llmTaskToolDefinition,
 
     async execute(_id: string, params: LlmTaskParams) {
       const prompt = typeof params.prompt === "string" ? params.prompt : "";
@@ -216,22 +224,14 @@ export function createLlmTaskTool(api: OpenClawPluginApi) {
       }
 
       const timeoutMs =
-        (typeof params.timeoutMs === "number" && params.timeoutMs > 0
-          ? params.timeoutMs
-          : undefined) ||
-        (typeof pluginCfg.timeoutMs === "number" && pluginCfg.timeoutMs > 0
-          ? pluginCfg.timeoutMs
-          : undefined) ||
+        asPositiveSafeInteger(params.timeoutMs) ??
+        asPositiveSafeInteger(pluginCfg.timeoutMs) ??
         30_000;
 
       const streamParams = {
-        temperature: typeof params.temperature === "number" ? params.temperature : undefined,
+        temperature: asFiniteNumber(params.temperature),
         maxTokens:
-          typeof params.maxTokens === "number"
-            ? params.maxTokens
-            : typeof pluginCfg.maxTokens === "number"
-              ? pluginCfg.maxTokens
-              : undefined,
+          asPositiveSafeInteger(params.maxTokens) ?? asPositiveSafeInteger(pluginCfg.maxTokens),
       };
 
       const input = params.input;
@@ -258,7 +258,7 @@ export function createLlmTaskTool(api: OpenClawPluginApi) {
           const sessionId = `llm-task-${Date.now()}`;
           const sessionFile = path.join(tmpDir, "session.json");
 
-          const result = await api.runtime.agent.runEmbeddedPiAgent({
+          const result = await api.runtime.agent.runEmbeddedAgent({
             sessionId,
             sessionFile,
             workspaceDir: api.config?.agents?.defaults?.workspace ?? process.cwd(),

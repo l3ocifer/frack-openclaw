@@ -1,10 +1,16 @@
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { isDiagnosticFlagEnabled } from "openclaw/plugin-sdk/diagnostic-runtime";
 import type {
   SearchConfigRecord,
   WebSearchProviderPlugin,
   WebSearchProviderToolDefinition,
 } from "openclaw/plugin-sdk/provider-web-search";
-import { createWebSearchProviderContractFields } from "openclaw/plugin-sdk/provider-web-search-config-contract";
+import {
+  createWebSearchProviderContractFields,
+  mergeScopedSearchConfig,
+  resolveProviderWebSearchPluginConfig,
+} from "openclaw/plugin-sdk/provider-web-search-config-contract";
+import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 
 const BRAVE_CREDENTIAL_PATH = "plugins.entries.brave.config.webSearch.apiKey";
 
@@ -22,7 +28,7 @@ const BraveSearchSchema = {
   properties: {
     query: { type: "string", description: "Search query string." },
     count: {
-      type: "number",
+      type: "integer",
       description: "Number of results to return (1-10).",
       minimum: 1,
       maximum: 10,
@@ -61,48 +67,26 @@ const BraveSearchSchema = {
   },
 } satisfies Record<string, unknown>;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function resolveProviderWebSearchPluginConfig(
-  config: unknown,
-  pluginId: string,
-): Record<string, unknown> | undefined {
+function resolveLegacyTopLevelBraveCredential(
+  config: OpenClawConfig | undefined,
+): { path: string; value: unknown } | undefined {
   if (!isRecord(config)) {
     return undefined;
   }
-  const plugins = isRecord(config.plugins) ? config.plugins : undefined;
-  const entries = isRecord(plugins?.entries) ? plugins.entries : undefined;
-  const entry = isRecord(entries?.[pluginId]) ? entries[pluginId] : undefined;
-  const pluginConfig = isRecord(entry?.config) ? entry.config : undefined;
-  return isRecord(pluginConfig?.webSearch) ? pluginConfig.webSearch : undefined;
+  const tools = isRecord(config.tools) ? config.tools : undefined;
+  const web = isRecord(tools?.web) ? tools.web : undefined;
+  const search = isRecord(web?.search) ? web.search : undefined;
+  if (!search || !("apiKey" in search)) {
+    return undefined;
+  }
+  return { path: "tools.web.search.apiKey", value: search.apiKey };
 }
 
-function mergeScopedSearchConfig(
-  searchConfig: Record<string, unknown> | undefined,
-  key: string,
-  pluginConfig: Record<string, unknown> | undefined,
-  options?: { mirrorApiKeyToTopLevel?: boolean },
-): Record<string, unknown> | undefined {
-  if (!pluginConfig) {
-    return searchConfig;
-  }
-
-  const currentScoped = isRecord(searchConfig?.[key]) ? searchConfig?.[key] : {};
-  const next: Record<string, unknown> = {
-    ...searchConfig,
-    [key]: {
-      ...currentScoped,
-      ...pluginConfig,
-    },
-  };
-
-  if (options?.mirrorApiKeyToTopLevel && pluginConfig.apiKey !== undefined) {
-    next.apiKey = pluginConfig.apiKey;
-  }
-
-  return next;
+function resolveConfiguredBraveCredential(config: OpenClawConfig | undefined): unknown {
+  return (
+    resolveProviderWebSearchPluginConfig(config, "brave")?.apiKey ??
+    resolveLegacyTopLevelBraveCredential(config)?.value
+  );
 }
 
 function resolveBraveMode(searchConfig?: Record<string, unknown>): "web" | "llm-context" {
@@ -148,6 +132,8 @@ export function createBraveWebSearchProvider(): WebSearchProviderPlugin {
       searchCredential: { type: "top-level" },
       configuredCredential: { pluginId: "brave" },
     }),
+    getConfiguredCredentialValue: resolveConfiguredBraveCredential,
+    getConfiguredCredentialFallback: resolveLegacyTopLevelBraveCredential,
     createTool: (ctx) =>
       createBraveToolDefinition(
         mergeScopedSearchConfig(

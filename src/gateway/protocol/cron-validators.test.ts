@@ -117,6 +117,8 @@ describe("cron protocol validators", () => {
         offset: 0,
         query: "daily",
         enabled: "all",
+        scheduleKind: "cron",
+        lastRunStatus: "unknown",
         sortBy: "nextRunAtMs",
         sortDir: "asc",
         agentId: "ops",
@@ -124,6 +126,8 @@ describe("cron protocol validators", () => {
     ).toBe(true);
     expect(validateCronListParams({ offset: -1 })).toBe(false);
     expect(validateCronListParams({ agentId: "" })).toBe(false);
+    expect(validateCronListParams({ scheduleKind: "yearly" })).toBe(false);
+    expect(validateCronListParams({ lastRunStatus: "pending" })).toBe(false);
   });
 
   it("enforces runs limit minimum for id and jobId selectors", () => {
@@ -144,6 +148,7 @@ describe("cron protocol validators", () => {
     expect(
       validateCronRunsParams({
         id: "job-1",
+        runId: "manual:job-1:123:0",
         limit: 50,
         offset: 0,
         status: "error",
@@ -152,6 +157,7 @@ describe("cron protocol validators", () => {
       }),
     ).toBe(true);
     expect(validateCronRunsParams({ id: "job-1", offset: -1 })).toBe(false);
+    expect(validateCronRunsParams({ id: "job-1", runId: "" })).toBe(false);
   });
 
   it("accepts all-scope runs with multi-select filters", () => {

@@ -176,9 +176,10 @@ describe("cron controller", () => {
       },
     });
 
-    await addCronJob(state);
+    const saved = await addCronJob(state);
 
     const addCall = findRequestCall(request.mock.calls, "cron.add");
+    expect(saved).toBe(true);
     const payload = requestPayload(addCall);
     expectRecordFields(payload, {
       name: "webhook job",
@@ -1138,7 +1139,8 @@ describe("cron controller", () => {
         payloadText: "",
       },
     });
-    await addCronJob(state);
+    const saved = await addCronJob(state);
+    expect(saved).toBe(false);
     expect(request).not.toHaveBeenCalled();
     expectRecordFields(state.cronFieldErrors, {
       name: "cron.errors.nameRequired",
@@ -1251,6 +1253,8 @@ describe("cron controller", () => {
           offset: 0,
           query: "daily",
           enabled: "enabled",
+          scheduleKind: "cron",
+          lastRunStatus: "error",
           sortBy: "updatedAtMs",
           sortDir: "desc",
         });
@@ -1279,15 +1283,44 @@ describe("cron controller", () => {
       client: { request } as unknown as CronState["client"],
       cronJobsQuery: "daily",
       cronJobsEnabledFilter: "enabled",
+      cronJobsScheduleKindFilter: "cron",
+      cronJobsLastStatusFilter: "error",
       cronJobsSortBy: "updatedAtMs",
       cronJobsSortDir: "desc",
     });
 
-    await loadCronJobsPage(state);
+    await loadCronJobsPage(state, { tableFilters: true });
 
     expect(state.cronJobs).toHaveLength(1);
     expect(state.cronJobsTotal).toBe(1);
     expect(state.cronJobsHasMore).toBe(false);
+  });
+
+  it("keeps table-only filters out of shared cron jobs loads", async () => {
+    const request = vi.fn(async (method: string, payload?: unknown) => {
+      if (method === "cron.list") {
+        const listPayload = requireRecord(payload, "cron.list payload");
+        expect(listPayload).not.toHaveProperty("scheduleKind");
+        expect(listPayload).not.toHaveProperty("lastRunStatus");
+        return { jobs: [], total: 0, hasMore: false, nextOffset: null };
+      }
+      return {};
+    });
+    const state = createState({
+      client: { request } as unknown as CronState["client"],
+      cronJobsScheduleKindFilter: "cron",
+      cronJobsLastStatusFilter: "error",
+    });
+
+    await loadCronJobsPage(state);
+
+    expect(request).toHaveBeenCalledWith(
+      "cron.list",
+      expect.not.objectContaining({
+        scheduleKind: expect.anything(),
+        lastRunStatus: expect.anything(),
+      }),
+    );
   });
 
   it("drops malformed cron jobs before they enter UI state", async () => {

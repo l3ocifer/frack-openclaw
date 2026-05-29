@@ -123,9 +123,6 @@ describe("loginWeb coverage", () => {
 
     const runtime: RuntimeEnv = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
     const pendingLogin = loginWeb(false, waitForWaConnectionMock as never, runtime);
-    await flushTasks();
-
-    expect(createWaSocketMock).toHaveBeenCalledTimes(2);
     await pendingLogin;
 
     expect(createWaSocketMock).toHaveBeenCalledTimes(2);
@@ -162,8 +159,8 @@ describe("loginWeb coverage", () => {
     );
     expect(runtime.log).toHaveBeenCalledWith("terminal:initial-qr");
     expect(runtime.log).toHaveBeenCalledWith("terminal:restart-qr");
-    expect(renderQrTerminalMock).toHaveBeenCalledWith("initial-qr");
-    expect(renderQrTerminalMock).toHaveBeenCalledWith("restart-qr");
+    expect(renderQrTerminalMock).toHaveBeenCalledWith("initial-qr", { small: true });
+    expect(renderQrTerminalMock).toHaveBeenCalledWith("restart-qr", { small: true });
   });
 
   it("clears creds and throws when logged out", async () => {

@@ -1,3 +1,4 @@
+import path from "node:path";
 import { Type } from "typebox";
 import type { AnyAgentTool, OpenClawConfig } from "../api.js";
 import { applyMemoryWikiMutation, normalizeMemoryWikiMutationInput } from "./apply.js";
@@ -11,6 +12,20 @@ import { getMemoryWikiPage, searchMemoryWiki, WIKI_SEARCH_MODES } from "./query.
 import { syncMemoryWikiImportedSources } from "./source-sync.js";
 import { renderMemoryWikiStatus, resolveMemoryWikiStatus } from "./status.js";
 
+function formatWikiToolReportPath(config: ResolvedMemoryWikiConfig, reportPath: string): string {
+  const vaultRoot = path.resolve(config.vault.path);
+  const resolvedReportPath = path.resolve(reportPath);
+  const relativeReportPath = path.relative(vaultRoot, resolvedReportPath);
+  if (
+    !relativeReportPath ||
+    relativeReportPath.startsWith("..") ||
+    path.isAbsolute(relativeReportPath)
+  ) {
+    return reportPath;
+  }
+  return relativeReportPath.replace(/\\/g, "/");
+}
+
 const WikiStatusSchema = Type.Object({}, { additionalProperties: false });
 const WikiLintSchema = Type.Object({}, { additionalProperties: false });
 const WikiSearchBackendSchema = Type.Union(
@@ -21,7 +36,7 @@ const WikiSearchModeSchema = Type.Union(WIKI_SEARCH_MODES.map((value) => Type.Li
 const WikiSearchSchema = Type.Object(
   {
     query: Type.String({ minLength: 1 }),
-    maxResults: Type.Optional(Type.Number({ minimum: 1 })),
+    maxResults: Type.Optional(Type.Integer({ minimum: 1 })),
     backend: Type.Optional(WikiSearchBackendSchema),
     corpus: Type.Optional(WikiSearchCorpusSchema),
     mode: Type.Optional(WikiSearchModeSchema),
@@ -31,8 +46,8 @@ const WikiSearchSchema = Type.Object(
 const WikiGetSchema = Type.Object(
   {
     lookup: Type.String({ minLength: 1 }),
-    fromLine: Type.Optional(Type.Number({ minimum: 1 })),
-    lineCount: Type.Optional(Type.Number({ minimum: 1 })),
+    fromLine: Type.Optional(Type.Integer({ minimum: 1 })),
+    lineCount: Type.Optional(Type.Integer({ minimum: 1 })),
     backend: Type.Optional(WikiSearchBackendSchema),
     corpus: Type.Optional(WikiSearchCorpusSchema),
   },
@@ -182,6 +197,7 @@ export function createWikiLintTool(
       const provenance = result.issuesByCategory.provenance.length;
       const errors = result.issues.filter((issue) => issue.severity === "error").length;
       const warnings = result.issues.filter((issue) => issue.severity === "warning").length;
+      const reportPath = formatWikiToolReportPath(config, result.reportPath);
       const summary =
         result.issueCount === 0
           ? "No wiki lint issues."
@@ -190,11 +206,16 @@ export function createWikiLintTool(
               `Contradictions: ${contradictions}`,
               `Open questions: ${openQuestions}`,
               `Provenance gaps: ${provenance}`,
-              `Report: ${result.reportPath}`,
+              `Report: ${reportPath}`,
             ].join("\n");
       return {
         content: [{ type: "text", text: summary }],
-        details: result,
+        details: {
+          issueCount: result.issueCount,
+          issues: result.issues,
+          issuesByCategory: result.issuesByCategory,
+          reportPath,
+        },
       };
     },
   };

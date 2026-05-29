@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   abortChatRunById,
+  abortChatRunsForProvider,
   isChatStopCommandText,
   type ChatAbortOps,
   type ChatAbortControllerEntry,
+  updateChatRunProvider,
 } from "./chat-abort.js";
 
 type ChatAbortPayload = {
@@ -54,6 +56,21 @@ function createOps(params: {
     chatDeltaSentAt: new Map([[runId, Date.now()]]),
     chatDeltaLastBroadcastLen: new Map([[runId, buffer?.length ?? 0]]),
     chatDeltaLastBroadcastText: new Map(buffer !== undefined ? [[runId, buffer]] : []),
+    agentDeltaSentAt: new Map([[`${runId}:assistant`, Date.now()]]),
+    bufferedAgentEvents: new Map([
+      [
+        `${runId}:assistant`,
+        {
+          payload: {
+            runId,
+            seq: 1,
+            stream: "assistant",
+            ts: Date.now(),
+            data: { text: "buffer", delta: "buffer" },
+          },
+        },
+      ],
+    ]),
     chatAbortedRuns: new Map(),
     removeChatRun,
     agentRunSeq: new Map(),
@@ -76,6 +93,8 @@ describe("isChatStopCommandText", () => {
     expect(isChatStopCommandText("stop please")).toBe(true);
     expect(isChatStopCommandText("do not do that")).toBe(true);
     expect(isChatStopCommandText("停止")).toBe(true);
+    expect(isChatStopCommandText("停下来")).toBe(true);
+    expect(isChatStopCommandText("暂停")).toBe(true);
     expect(isChatStopCommandText("やめて")).toBe(true);
     expect(isChatStopCommandText("توقف")).toBe(true);
     expect(isChatStopCommandText("остановись")).toBe(true);
@@ -110,6 +129,8 @@ describe("abortChatRunById", () => {
     expect(ops.chatDeltaSentAt.has(runId)).toBe(false);
     expect(ops.chatDeltaLastBroadcastLen.has(runId)).toBe(false);
     expect(ops.chatDeltaLastBroadcastText.has(runId)).toBe(false);
+    expect(ops.agentDeltaSentAt?.has(`${runId}:assistant`)).toBe(false);
+    expect(ops.bufferedAgentEvents?.has(`${runId}:assistant`)).toBe(false);
     expect(ops.removeChatRun).toHaveBeenCalledWith(runId, runId, sessionKey);
     expect(ops.agentRunSeq.has(runId)).toBe(false);
     expect(ops.agentRunSeq.has("client-run-1")).toBe(false);
@@ -144,6 +165,21 @@ describe("abortChatRunById", () => {
     expect(payload.message).toBeUndefined();
   });
 
+  it("tags maintenance timeouts as timeout abort reasons", () => {
+    const runId = "run-timeout";
+    const sessionKey = "main";
+    const entry = createActiveEntry(sessionKey);
+    const ops = createOps({ runId, entry });
+
+    const result = abortChatRunById(ops, { runId, sessionKey, stopReason: "timeout" });
+
+    expect(result).toEqual({ aborted: true });
+    expect(entry.abortStopReason).toBe("timeout");
+    expect(entry.controller.signal.aborted).toBe(true);
+    expect(entry.controller.signal.reason).toBeInstanceOf(Error);
+    expect((entry.controller.signal.reason as Error).name).toBe("TimeoutError");
+  });
+
   it("preserves partial message even when abort listeners clear buffers synchronously", () => {
     const now = new Date("2026-01-02T03:04:05.000Z");
     vi.useFakeTimers();
@@ -174,5 +210,38 @@ describe("abortChatRunById", () => {
         timestamp: now.getTime(),
       },
     });
+  });
+});
+
+describe("abortChatRunsForProvider", () => {
+  it("uses updated provider metadata after model fallback", () => {
+    const runId = "run-1";
+    const sessionKey = "main";
+    const entry = createActiveEntry(sessionKey);
+    entry.providerId = "openai";
+    entry.authProviderId = "openai";
+    const ops = createOps({ runId, entry });
+
+    const updated = updateChatRunProvider(ops.chatAbortControllers, {
+      runId,
+      providerId: "openrouter",
+      authProviderId: "openrouter",
+    });
+    const result = abortChatRunsForProvider(ops, {
+      providerId: "openrouter",
+      stopReason: "auth-revoked",
+    });
+
+    expect(updated).toBe(true);
+    expect(result.runIds).toEqual([runId]);
+    expect(entry.controller.signal.aborted).toBe(true);
+    expect(ops.broadcast).toHaveBeenCalledWith(
+      "chat",
+      expect.objectContaining({
+        runId,
+        state: "aborted",
+        stopReason: "auth-revoked",
+      }),
+    );
   });
 });

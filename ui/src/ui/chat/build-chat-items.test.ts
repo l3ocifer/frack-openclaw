@@ -198,6 +198,29 @@ describe("buildChatItems", () => {
     ]);
   });
 
+  it("deduplicates accumulated stream snapshots around tool cards", () => {
+    const items = buildChatItems(
+      createProps({
+        streamSegments: [
+          { text: "First thought.", ts: 1 },
+          { text: "First thought. After tool.", ts: 3 },
+        ],
+        toolMessages: [
+          { role: "toolResult", content: "Tool one", timestamp: 2 },
+          { role: "toolResult", content: "Tool two", timestamp: 4 },
+        ],
+        stream: "First thought. After tool. Final sentence.",
+        streamStartedAt: 5,
+      }),
+    );
+
+    expect(items.filter((item) => item.kind === "stream")).toMatchObject([
+      { text: "First thought." },
+      { text: "After tool." },
+      { text: "Final sentence." },
+    ]);
+  });
+
   it("suppresses metadata-only history messages before grouping", () => {
     const groups = messageGroups({
       messages: [
@@ -234,6 +257,53 @@ describe("buildChatItems", () => {
     expect(groups).toHaveLength(101);
     expect(messageRecord(groups[1]).content).toBe("message 5");
     expect(messageRecord(groups[groups.length - 1]).content).toBe("message 104");
+  });
+
+  it("budgets rendered history by tool-result content size", () => {
+    const largeOutput = "x".repeat(100_000);
+    const items = buildChatItems(
+      createProps({
+        messages: Array.from({ length: 6 }, (_, index) => ({
+          role: "assistant",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: `tool-${index}`,
+              content: largeOutput,
+            },
+          ],
+          timestamp: index,
+        })),
+      }),
+    );
+
+    const groups = items.filter((item) => item.kind === "group");
+    const noticeGroup = requireGroup(items[0]);
+    expect(messageRecord(noticeGroup).content).toBe("Showing last 2 messages (4 hidden).");
+    expect(groups).toHaveLength(2);
+    expect(groups[1].messages).toHaveLength(2);
+    expect(messageRecord(groups[1], 0).timestamp).toBe(4);
+    expect(messageRecord(groups[1], 1).timestamp).toBe(5);
+  });
+
+  it("does not crash when history contains malformed entries", () => {
+    const items = buildChatItems(
+      createProps({
+        messages: [
+          null,
+          undefined,
+          {
+            role: "assistant",
+            content: "still visible",
+            timestamp: 1,
+          },
+        ],
+      }),
+    );
+
+    const groups = items.filter((item) => item.kind === "group");
+    expect(groups).toHaveLength(1);
+    expect(messageRecord(groups[0]).content).toBe("still visible");
   });
 
   it("does not collapse duplicate text messages separated by another message", () => {
@@ -538,7 +608,7 @@ describe("buildChatItems", () => {
     expect(divider.kind).toBe("divider");
     expect(divider.label).toBe("Compacted history");
     expect(divider.description).toBe(
-      "Earlier turns are preserved in a compaction checkpoint. Open session checkpoints to branch or restore that pre-compaction view.",
+      "The compacted transcript is preserved as a checkpoint. Open session checkpoints to branch or restore from that compacted view.",
     );
     const action = requireRecord(divider.action);
     expect(action.kind).toBe("session-checkpoints");

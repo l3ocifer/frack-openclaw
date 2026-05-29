@@ -3,9 +3,13 @@ import type {
   ProviderRuntimeModel,
 } from "openclaw/plugin-sdk/core";
 import { buildCopilotIdeHeaders, COPILOT_INTEGRATION_ID } from "openclaw/plugin-sdk/provider-auth";
+import { readProviderJsonArrayFieldResponse } from "openclaw/plugin-sdk/provider-http";
 import type { ModelDefinitionConfig } from "openclaw/plugin-sdk/provider-model-shared";
 import { normalizeModelCompat } from "openclaw/plugin-sdk/provider-model-shared";
-import { normalizeOptionalLowercaseString } from "openclaw/plugin-sdk/string-coerce-runtime";
+import {
+  asPositiveSafeInteger,
+  normalizeOptionalLowercaseString,
+} from "openclaw/plugin-sdk/string-coerce-runtime";
 import {
   resolveCopilotModelCompat,
   resolveCopilotTransportApi,
@@ -16,7 +20,7 @@ export const PROVIDER_ID = "github-copilot";
 const CODEX_FORWARD_COMPAT_TARGET_IDS = new Set(["gpt-5.4", "gpt-5.3-codex"]);
 // gpt-5.3-codex is only a useful template when gpt-5.4 is the target; it is
 // always a registry miss (and therefore skipped) when it is the target itself.
-const CODEX_TEMPLATE_MODEL_IDS = ["gpt-5.3-codex", "gpt-5.2-codex"] as const;
+const CODEX_TEMPLATE_MODEL_IDS = ["gpt-5.3-codex"] as const;
 
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 const DEFAULT_MAX_TOKENS = 8192;
@@ -168,13 +172,8 @@ function mapCopilotApiModelToDefinition(
   const input: ModelDefinitionConfig["input"] = supportsVision ? ["text", "image"] : ["text"];
 
   const contextWindow =
-    typeof limits?.max_context_window_tokens === "number" && limits.max_context_window_tokens > 0
-      ? limits.max_context_window_tokens
-      : DEFAULT_CONTEXT_WINDOW;
-  const maxTokens =
-    typeof limits?.max_output_tokens === "number" && limits.max_output_tokens > 0
-      ? limits.max_output_tokens
-      : DEFAULT_MAX_TOKENS;
+    asPositiveSafeInteger(limits?.max_context_window_tokens) ?? DEFAULT_CONTEXT_WINDOW;
+  const maxTokens = asPositiveSafeInteger(limits?.max_output_tokens) ?? DEFAULT_MAX_TOKENS;
   const compat = resolveCopilotModelCompat(id);
 
   const definition: ModelDefinitionConfig = {
@@ -189,6 +188,13 @@ function mapCopilotApiModelToDefinition(
     ...(compat ? { compat } : {}),
   };
   return definition;
+}
+
+function asCopilotApiModelEntry(value: unknown): CopilotApiModelEntry {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("Copilot /models: malformed JSON response");
+  }
+  return value as CopilotApiModelEntry;
 }
 
 export type FetchCopilotModelCatalogParams = {
@@ -242,11 +248,11 @@ export async function fetchCopilotModelCatalog(
     if (!res.ok) {
       throw new Error(`Copilot /models fetch failed: HTTP ${res.status}`);
     }
-    const json = (await res.json()) as { data?: CopilotApiModelEntry[] };
-    const data = Array.isArray(json?.data) ? json.data : [];
+    const data = await readProviderJsonArrayFieldResponse(res, "Copilot /models", "data");
     const seen = new Set<string>();
     const out: ModelDefinitionConfig[] = [];
-    for (const entry of data) {
+    for (const rawEntry of data) {
+      const entry = asCopilotApiModelEntry(rawEntry);
       const def = mapCopilotApiModelToDefinition(entry);
       if (!def) {
         continue;

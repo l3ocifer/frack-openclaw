@@ -41,10 +41,13 @@ export type CodexAppServerThreadBinding = {
   serviceTier?: CodexServiceTier;
   dynamicToolsFingerprint?: string;
   userMcpServersFingerprint?: string;
+  mcpServersFingerprint?: string;
+  nativeHookRelayGeneration?: string;
   pluginAppsFingerprint?: string;
   pluginAppsInputFingerprint?: string;
   pluginAppPolicyContext?: PluginAppPolicyContext;
   contextEngine?: CodexAppServerContextEngineBinding;
+  environmentSelectionFingerprint?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -53,6 +56,14 @@ export type CodexAppServerContextEngineBinding = {
   schemaVersion: 1;
   engineId: string;
   policyFingerprint: string;
+  projection?: CodexAppServerContextEngineProjectionBinding;
+};
+
+export type CodexAppServerContextEngineProjectionBinding = {
+  schemaVersion: 1;
+  mode: "thread_bootstrap";
+  epoch: string;
+  fingerprint?: string;
 };
 
 export function resolveCodexAppServerBindingPath(sessionFile: string): string {
@@ -104,6 +115,13 @@ export async function readCodexAppServerBinding(
         typeof parsed.userMcpServersFingerprint === "string"
           ? parsed.userMcpServersFingerprint
           : undefined,
+      mcpServersFingerprint:
+        typeof parsed.mcpServersFingerprint === "string" ? parsed.mcpServersFingerprint : undefined,
+      nativeHookRelayGeneration:
+        typeof parsed.nativeHookRelayGeneration === "string" &&
+        parsed.nativeHookRelayGeneration.trim()
+          ? parsed.nativeHookRelayGeneration
+          : undefined,
       pluginAppsFingerprint:
         typeof parsed.pluginAppsFingerprint === "string" ? parsed.pluginAppsFingerprint : undefined,
       pluginAppsInputFingerprint:
@@ -112,6 +130,10 @@ export async function readCodexAppServerBinding(
           : undefined,
       pluginAppPolicyContext: readPluginAppPolicyContext(parsed.pluginAppPolicyContext),
       contextEngine: readContextEngineBinding(parsed.contextEngine),
+      environmentSelectionFingerprint:
+        typeof parsed.environmentSelectionFingerprint === "string"
+          ? parsed.environmentSelectionFingerprint
+          : undefined,
       createdAt: typeof parsed.createdAt === "string" ? parsed.createdAt : new Date().toISOString(),
       updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date().toISOString(),
     };
@@ -149,10 +171,13 @@ export async function writeCodexAppServerBinding(
     serviceTier: binding.serviceTier,
     dynamicToolsFingerprint: binding.dynamicToolsFingerprint,
     userMcpServersFingerprint: binding.userMcpServersFingerprint,
+    mcpServersFingerprint: binding.mcpServersFingerprint,
+    nativeHookRelayGeneration: binding.nativeHookRelayGeneration,
     pluginAppsFingerprint: binding.pluginAppsFingerprint,
     pluginAppsInputFingerprint: binding.pluginAppsInputFingerprint,
     pluginAppPolicyContext: binding.pluginAppPolicyContext,
     contextEngine: binding.contextEngine,
+    environmentSelectionFingerprint: binding.environmentSelectionFingerprint,
     createdAt: binding.createdAt ?? now,
     updatedAt: now,
   };
@@ -178,6 +203,30 @@ function readContextEngineBinding(value: unknown): CodexAppServerContextEngineBi
     schemaVersion: 1,
     engineId: record.engineId,
     policyFingerprint: record.policyFingerprint,
+    projection: readContextEngineProjectionBinding(record.projection),
+  };
+}
+
+function readContextEngineProjectionBinding(
+  value: unknown,
+): CodexAppServerContextEngineProjectionBinding | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    record.schemaVersion !== 1 ||
+    record.mode !== "thread_bootstrap" ||
+    typeof record.epoch !== "string" ||
+    !record.epoch.trim()
+  ) {
+    return undefined;
+  }
+  return {
+    schemaVersion: 1,
+    mode: "thread_bootstrap",
+    epoch: record.epoch,
+    fingerprint: typeof record.fingerprint === "string" ? record.fingerprint : undefined,
   };
 }
 
@@ -238,7 +287,10 @@ function readPluginAppPolicyContext(value: unknown): PluginAppPolicyContext | un
   };
 }
 
-export async function clearCodexAppServerBinding(sessionFile: string): Promise<void> {
+export async function clearCodexAppServerBinding(
+  sessionFile: string,
+  _lookup: Omit<CodexAppServerAuthProfileLookup, "authProfileId"> = {},
+): Promise<void> {
   try {
     await fs.unlink(resolveCodexAppServerBindingPath(sessionFile));
   } catch (error) {

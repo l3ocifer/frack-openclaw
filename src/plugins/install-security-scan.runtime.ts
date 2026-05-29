@@ -2,9 +2,11 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { tryReadJson } from "../infra/json-files.js";
 import { resolveOpenClawPackageRootSync } from "../infra/openclaw-root.js";
+import { parseStrictPositiveInteger } from "../infra/parse-finite-number.js";
 import { extensionUsesSkippedScannerPath, isPathInside } from "../security/scan-paths.js";
 import { scanDirectoryWithSummary } from "../security/skill-scanner.js";
 import { normalizeOptionalString } from "../shared/string-coerce.js";
+import { normalizeTrimmedStringList, uniqueStrings } from "../shared/string-normalization.js";
 import {
   findBlockedPackageDirectoryInPath,
   findBlockedPackageFileAliasInPath,
@@ -365,8 +367,8 @@ function readPositiveIntegerEnv(name: string, fallback: number): number {
   if (!rawValue) {
     return fallback;
   }
-  const parsedValue = Number.parseInt(rawValue, 10);
-  if (!Number.isFinite(parsedValue) || parsedValue < 1) {
+  const parsedValue = parseStrictPositiveInteger(rawValue);
+  if (parsedValue === undefined) {
     return fallback;
   }
   return parsedValue;
@@ -823,22 +825,13 @@ async function scanDirectoryTarget(params: {
   }
 }
 
-function readStringList(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value
-    .map((entry) => normalizeOptionalString(entry))
-    .filter((entry): entry is string => Boolean(entry));
-}
-
 function collectPackageExecutableScanEntries(params: {
   extensions: string[];
   packageMetadata?: PackageExecutableScanMetadata;
 }): string[] {
   const entries: string[] = [];
   const metadata = params.packageMetadata;
-  const runtimeExtensions = readStringList(metadata?.runtimeExtensions);
+  const runtimeExtensions = normalizeTrimmedStringList(metadata?.runtimeExtensions);
   for (const [index, extensionEntry] of params.extensions.entries()) {
     entries.push(extensionEntry);
     const runtimeEntry = runtimeExtensions[index];
@@ -859,7 +852,94 @@ function collectPackageExecutableScanEntries(params: {
   } else if (setupEntry) {
     entries.push(...listBuiltRuntimeEntryCandidates(setupEntry));
   }
-  return [...new Set(entries)];
+  return uniqueStrings(entries);
+}
+
+async function resolveRuntimeGraphFileCandidate(filePath: string): Promise<string | undefined> {
+  const resolvedPath = path.resolve(filePath);
+  const ext = path.extname(resolvedPath).toLowerCase();
+  const candidates = ext
+    ? [resolvedPath]
+    : [
+        resolvedPath,
+        ...RUNTIME_GRAPH_SCAN_EXTENSIONS.map((runtimeExt) => `${resolvedPath}${runtimeExt}`),
+        ...RUNTIME_GRAPH_SCAN_EXTENSIONS.map((runtimeExt) =>
+          path.join(resolvedPath, `index${runtimeExt}`),
+        ),
+      ];
+
+  for (const candidate of candidates) {
+    let stat: Awaited<ReturnType<typeof fs.stat>>;
+    try {
+      stat = await fs.stat(candidate);
+    } catch {
+      continue;
+    }
+    if (stat.isFile() && RUNTIME_GRAPH_SCAN_EXTENSIONS.includes(path.extname(candidate))) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+function collectLocalRuntimeImportSpecifiers(source: string): string[] {
+  const specifiers: string[] = [];
+  for (const match of source.matchAll(LOCAL_RUNTIME_IMPORT_PATTERN)) {
+    const specifier = match[1] ?? match[2] ?? match[3];
+    if (specifier?.startsWith(".")) {
+      specifiers.push(specifier);
+    }
+  }
+  return specifiers;
+}
+
+async function collectPackageRuntimeGraphScanEntries(params: {
+  entryFiles: string[];
+  packageDir: string;
+}): Promise<string[]> {
+  const packageDir = path.resolve(params.packageDir);
+  const seen = new Set<string>();
+  const queue: string[] = [];
+  const out: string[] = [];
+
+  for (const entryFile of params.entryFiles) {
+    const resolvedEntry = await resolveRuntimeGraphFileCandidate(entryFile);
+    if (resolvedEntry && isPathInside(packageDir, resolvedEntry)) {
+      queue.push(resolvedEntry);
+    }
+  }
+
+  while (queue.length > 0 && out.length < RUNTIME_GRAPH_SCAN_MAX_FILES) {
+    const filePath = queue.shift();
+    if (!filePath) {
+      break;
+    }
+    const resolvedPath = path.resolve(filePath);
+    if (seen.has(resolvedPath) || !isPathInside(packageDir, resolvedPath)) {
+      continue;
+    }
+    seen.add(resolvedPath);
+    out.push(resolvedPath);
+
+    let source: string;
+    try {
+      source = await fs.readFile(resolvedPath, "utf-8");
+    } catch {
+      continue;
+    }
+    for (const specifier of collectLocalRuntimeImportSpecifiers(source)) {
+      const importedPath = path.resolve(path.dirname(resolvedPath), specifier);
+      if (!isPathInside(packageDir, importedPath)) {
+        continue;
+      }
+      const resolvedImport = await resolveRuntimeGraphFileCandidate(importedPath);
+      if (resolvedImport && !seen.has(path.resolve(resolvedImport))) {
+        queue.push(resolvedImport);
+      }
+    }
+  }
+
+  return out;
 }
 
 async function resolveRuntimeGraphFileCandidate(filePath: string): Promise<string | undefined> {

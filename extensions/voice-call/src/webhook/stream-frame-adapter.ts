@@ -23,9 +23,9 @@ function parseTimestampMs(value: unknown): number | undefined {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value;
   }
-  if (typeof value === "string") {
-    const parsed = Number.parseInt(value, 10);
-    return Number.isFinite(parsed) ? parsed : undefined;
+  if (typeof value === "string" && /^[+-]?\d+$/.test(value.trim())) {
+    const parsed = Number(value.trim());
+    return Number.isSafeInteger(parsed) ? parsed : undefined;
   }
   return undefined;
 }
@@ -40,6 +40,15 @@ function tryParseJson(rawMessage: string): Record<string, unknown> | null {
     /* fall through */
   }
   return null;
+}
+
+function normalizeBase64ForCompare(value: string): string {
+  return value.replace(/=+$/u, "").replace(/-/gu, "+").replace(/_/gu, "/");
+}
+
+function isValidBase64Payload(value: string): boolean {
+  const buffer = Buffer.from(value, "base64");
+  return normalizeBase64ForCompare(buffer.toString("base64")) === normalizeBase64ForCompare(value);
 }
 
 export class TwilioStreamFrameAdapter implements StreamFrameAdapter {
@@ -71,7 +80,7 @@ export class TwilioStreamFrameAdapter implements StreamFrameAdapter {
           ? (msg.media as Record<string, unknown>)
           : undefined;
       const payload = typeof mediaData?.payload === "string" ? mediaData.payload : undefined;
-      if (!payload) {
+      if (!payload || !isValidBase64Payload(payload)) {
         return { kind: "ignored" };
       }
       return {
@@ -151,7 +160,7 @@ export class TelnyxStreamFrameAdapter implements StreamFrameAdapter {
           ? (msg.media as Record<string, unknown>)
           : undefined;
       const payload = typeof mediaData?.payload === "string" ? mediaData.payload : undefined;
-      if (!payload) {
+      if (!payload || !isValidBase64Payload(payload)) {
         return { kind: "ignored" };
       }
       return {

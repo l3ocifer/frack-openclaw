@@ -137,6 +137,65 @@ describe("scripts/lib/openclaw-test-state", () => {
           `^${escapeRegex(customTemp)}/openclaw-update-channel-switch-update-stable-home\\.`,
         ),
       );
+
+      const trailingSlashProbe = await execFileAsync("bash", [
+        "-lc",
+        `export OPENCLAW_TEST_STATE_TMPDIR=${shellQuote(`${customTemp}/`)}; source ${shellQuote(snippetFile)}; node -e 'process.stdout.write(JSON.stringify({home:process.env.HOME,tmpRoot:process.env.OPENCLAW_TEST_STATE_TMP_ROOT,stateDir:process.env.OPENCLAW_STATE_DIR}));'; rm -rf "$HOME"`,
+      ]);
+      const trailingSlashPayload = JSON.parse(trailingSlashProbe.stdout);
+      expect(trailingSlashPayload.tmpRoot).toBe(customTemp);
+      expect(trailingSlashPayload.home).toMatch(
+        new RegExp(
+          `^${escapeRegex(customTemp)}/openclaw-update-channel-switch-update-stable-home\\.`,
+        ),
+      );
+      expect(trailingSlashPayload.stateDir).toBe(`${trailingSlashPayload.home}/.openclaw`);
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps shell key generation independent of node", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-test-state-path-node-"));
+    const fakeBin = path.join(tempRoot, "bin");
+    const snippetFile = path.join(tempRoot, "state.sh");
+    const functionFile = path.join(tempRoot, "state-function.sh");
+    try {
+      await fs.mkdir(fakeBin, { recursive: true });
+      await fs.writeFile(
+        path.join(fakeBin, "node"),
+        "#!/bin/sh\necho 'fake node should not be used for key generation' >&2\nexit 42\n",
+        "utf8",
+      );
+      await fs.chmod(path.join(fakeBin, "node"), 0o755);
+
+      const shell = await execFileAsync(process.execPath, [
+        scriptPath,
+        "shell",
+        "--label",
+        "path-node",
+        "--scenario",
+        "empty",
+      ]);
+      await fs.writeFile(snippetFile, shell.stdout, "utf8");
+
+      const shellProbe = await execFileAsync("bash", [
+        "-lc",
+        `export PATH=${shellQuote(fakeBin)}:$PATH; source ${shellQuote(snippetFile)}; printf '%s' "$OPENCLAW_AUTH_PROFILE_SECRET_KEY"; rm -rf "$HOME"`,
+      ]);
+      expect(shellProbe.stdout).toMatch(secretKeyPattern);
+
+      const renderedFunction = await execFileAsync(process.execPath, [
+        scriptPath,
+        "shell-function",
+      ]);
+      await fs.writeFile(functionFile, renderedFunction.stdout, "utf8");
+
+      const functionProbe = await execFileAsync("bash", [
+        "-lc",
+        `export PATH=${shellQuote(fakeBin)}:$PATH; export OPENCLAW_TEST_STATE_TMPDIR=${shellQuote(path.join(tempRoot, "function-tmp"))}; source ${shellQuote(functionFile)}; openclaw_test_state_create "path node" minimal; printf '%s' "$OPENCLAW_AUTH_PROFILE_SECRET_KEY"; rm -rf "$HOME"`,
+      ]);
+      expect(functionProbe.stdout).toMatch(secretKeyPattern);
     } finally {
       await fs.rm(tempRoot, { recursive: true, force: true });
     }
@@ -245,6 +304,17 @@ describe("scripts/lib/openclaw-test-state", () => {
       expect(payload.workspace).toBe(`${payload.home}/workspace`);
       expect(payload.secretKey).toMatch(secretKeyPattern);
       expect(payload.config).toStrictEqual({});
+
+      const trailingTmpDir = path.join(tempRoot, "function-trailing-tmp");
+      const trailingProbe = await execFileAsync("bash", [
+        "-lc",
+        `export OPENCLAW_TEST_STATE_TMPDIR=${shellQuote(`${trailingTmpDir}/`)}; source ${shellQuote(snippetFile)}; openclaw_test_state_create "onboard case" minimal; node -e 'process.stdout.write(JSON.stringify({home:process.env.HOME,tmpDir:process.env.OPENCLAW_TEST_STATE_TMPDIR,stateDir:process.env.OPENCLAW_STATE_DIR,workspace:process.env.OPENCLAW_TEST_WORKSPACE_DIR}));'; rm -rf "$HOME"`,
+      ]);
+
+      const trailingPayload = JSON.parse(trailingProbe.stdout);
+      expect(trailingPayload.home).toBe(`${trailingTmpDir}/${path.basename(trailingPayload.home)}`);
+      expect(trailingPayload.stateDir).toBe(`${trailingPayload.home}/.openclaw`);
+      expect(trailingPayload.workspace).toBe(`${trailingPayload.home}/workspace`);
 
       const existingHome = path.join(tempRoot, "existing-home");
       const existingProbe = await execFileAsync("bash", [

@@ -9,7 +9,7 @@
     "openclaw": "workspace:*"
   },
   "peerDependencies": {
-    "openclaw": ">=2026.5.12-beta.1"
+    "openclaw": ">=2026.5.27"
   },
   "peerDependenciesMeta": {
     "openclaw": {

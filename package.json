@@ -1759,7 +1759,7 @@
     "ajv": "8.20.0",
     "chalk": "5.6.2",
     "chokidar": "5.0.0",
-    "commander": "14.0.3",
+    "commander": "15.0.0",
     "croner": "10.0.1",
     "dotenv": "17.4.2",
     "express": "5.2.1",

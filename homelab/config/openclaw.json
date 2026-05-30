@@ -257,7 +257,10 @@
   gateway: {
     mode: "local",  // schema enum: local|remote — pod foreground == "local"
     port: 18789,
-    bind: "0.0.0.0",   // expose on Service; Authelia in front
+    // Upstream OpenClaw tightened the schema (2026-05): bind must be one of
+    // auto|lan|loopback|custom|tailnet. `lan` binds 0.0.0.0 on cluster-internal
+    // interfaces, which is what the Service in front of us expects.
+    bind: "lan",   // expose on Service; Authelia in front
   },
 
   // NOTE: channels intentionally omitted. The upstream channel-plugin

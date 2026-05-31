@@ -8,8 +8,8 @@
   },
   "type": "module",
   "dependencies": {
-    "@larksuiteoapi/node-sdk": "1.63.1",
-    "typebox": "1.1.38",
+    "@larksuiteoapi/node-sdk": "1.66.0",
+    "typebox": "1.1.39",
     "zod": "4.4.3"
   },
   "devDependencies": {
@@ -17,7 +17,7 @@
     "openclaw": "workspace:*"
   },
   "peerDependencies": {
-    "openclaw": ">=2026.5.12-beta.1"
+    "openclaw": ">=2026.5.28"
   },
   "peerDependenciesMeta": {
     "openclaw": {

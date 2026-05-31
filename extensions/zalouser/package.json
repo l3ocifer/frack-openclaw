@@ -8,7 +8,7 @@
   },
   "type": "module",
   "dependencies": {
-    "typebox": "1.1.38",
+    "typebox": "1.1.39",
     "zca-js": "2.1.2",
     "zod": "4.4.3"
   },
@@ -17,7 +17,7 @@
     "openclaw": "workspace:*"
   },
   "peerDependencies": {
-    "openclaw": ">=2026.5.12-beta.1"
+    "openclaw": ">=2026.5.28"
   },
   "peerDependenciesMeta": {
     "openclaw": {

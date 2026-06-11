@@ -241,9 +241,6 @@ spec:
             - name: gateway
               containerPort: 18789
               protocol: TCP
-            - name: metrics
-              containerPort: 9100
-              protocol: TCP
           livenessProbe:
             httpGet:
               path: /healthz

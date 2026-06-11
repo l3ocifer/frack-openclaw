@@ -19,9 +19,3 @@ spec:
       port: 8443
       targetPort: gateway
       protocol: TCP
-    - name: metrics
-      # OpenClaw serves /metrics on the gateway port — nothing binds 9100
-      # (homelab#47: TargetDown).
-      port: 9100
-      targetPort: gateway
-      protocol: TCP

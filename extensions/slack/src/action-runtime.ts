@@ -1,3 +1,4 @@
+// Slack plugin module implements action runtime behavior.
 import type { AgentToolResult } from "openclaw/plugin-sdk/agent-core";
 import { readBooleanParam } from "openclaw/plugin-sdk/boolean-param";
 import { isSingleUseReplyToMode } from "openclaw/plugin-sdk/reply-reference";
@@ -429,9 +430,9 @@ export async function handleSlackAction(
       case "readMessages": {
         const channelId = resolveChannelId();
         assertSlackReadTargetAllowed({ account, cfg, channelId });
-        const limitRaw = params.limit;
-        const limit =
-          typeof limitRaw === "number" && Number.isFinite(limitRaw) ? limitRaw : undefined;
+        const limit = readPositiveIntegerParam(params, "limit", {
+          message: "limit must be a positive integer.",
+        });
         const before = readStringParam(params, "before");
         const after = readStringParam(params, "after");
         const threadId = readStringParam(params, "threadId");

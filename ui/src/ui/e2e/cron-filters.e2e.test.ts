@@ -1,15 +1,17 @@
+// Control UI tests cover cron filters behavior.
 import { chromium, type Browser, type Page } from "playwright";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   canRunPlaywrightChromium,
   installMockGateway,
+  resolvePlaywrightChromiumExecutablePath,
   startControlUiE2eServer,
   type ControlUiE2eServer,
   type MockGatewayControls,
   type MockGatewayRequest,
 } from "../../test-helpers/control-ui-e2e.ts";
 
-const chromiumExecutablePath = chromium.executablePath();
+const chromiumExecutablePath = resolvePlaywrightChromiumExecutablePath(chromium.executablePath());
 const chromiumAvailable = canRunPlaywrightChromium(chromiumExecutablePath);
 const allowMissingChromium = process.env.OPENCLAW_UI_E2E_ALLOW_MISSING_CHROMIUM === "1";
 const describeControlUiE2e = chromiumAvailable || !allowMissingChromium ? describe : describe.skip;
@@ -66,24 +68,59 @@ async function waitForCronListRequest(
     if (match) {
       return match;
     }
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await new Promise((resolve) => {
+      setTimeout(resolve, 50);
+    });
   }
   throw new Error(`No matching cron.list request found: ${JSON.stringify(requests)}`);
 }
 
+type PageDiagnostics = {
+  consoleMessages: string[];
+  pageErrors: string[];
+};
+
 function jobTitle(page: Page, name: string) {
   return page.locator(".cron-job .list-title", { hasText: new RegExp(`^${name}$`, "u") });
+}
+
+async function waitForJobTitle(
+  page: Page,
+  gateway: MockGatewayControls,
+  diagnostics: PageDiagnostics,
+  name: string,
+) {
+  try {
+    await jobTitle(page, name).waitFor({ timeout: 10_000 });
+  } catch (err) {
+    const requests = await gateway.getRequests();
+    const bodyText = await page.locator("body").textContent({ timeout: 1_000 }).catch(String);
+    const content = await page.content().catch(String);
+    throw new Error(
+      [
+        `Timed out waiting for cron job title: ${name}`,
+        `URL: ${page.url()}`,
+        `Gateway requests: ${JSON.stringify(requests)}`,
+        `Page errors: ${JSON.stringify(diagnostics.pageErrors)}`,
+        `Console: ${JSON.stringify(diagnostics.consoleMessages)}`,
+        `Page text: ${bodyText}`,
+        `Page content: ${content.slice(0, 1000)}`,
+        `Original error: ${String(err)}`,
+      ].join("\n"),
+      { cause: err },
+    );
+  }
 }
 
 describeControlUiE2e("Control UI cron mocked Gateway E2E", () => {
   beforeAll(async () => {
     if (!chromiumAvailable) {
       throw new Error(
-        `Playwright Chromium is not installed at ${chromiumExecutablePath}. Run \`pnpm --dir ui exec playwright install chromium\`, or set OPENCLAW_UI_E2E_ALLOW_MISSING_CHROMIUM=1 only when intentionally skipping this lane.`,
+        `Playwright Chromium is not installed or cannot start at ${chromiumExecutablePath}. Run \`pnpm --dir ui exec playwright install --with-deps chromium\`, or set OPENCLAW_UI_E2E_ALLOW_MISSING_CHROMIUM=1 only when intentionally skipping this lane.`,
       );
     }
     server = await startControlUiE2eServer();
-    browser = await chromium.launch();
+    browser = await chromium.launch({ executablePath: chromiumExecutablePath });
   });
 
   afterAll(async () => {
@@ -111,6 +148,10 @@ describeControlUiE2e("Control UI cron mocked Gateway E2E", () => {
       viewport: { height: 900, width: 1280 },
     });
     const page = await context.newPage();
+    const pageErrors: string[] = [];
+    const consoleMessages: string[] = [];
+    page.on("pageerror", (err) => pageErrors.push(String(err)));
+    page.on("console", (msg) => consoleMessages.push(`${msg.type()}: ${msg.text()}`));
     const gateway = await installMockGateway(page, {
       methodResponses: {
         "cron.list": {
@@ -143,9 +184,10 @@ describeControlUiE2e("Control UI cron mocked Gateway E2E", () => {
     });
 
     try {
-      await page.goto(`${server.baseUrl}cron`);
-      await jobTitle(page, "Digest every minute").waitFor({ timeout: 10_000 });
-      await jobTitle(page, "Nightly cron pending").waitFor({ timeout: 10_000 });
+      const response = await page.goto(`${server.baseUrl}cron`);
+      expect(response?.status()).toBe(200);
+      await waitForJobTitle(page, gateway, { consoleMessages, pageErrors }, "Digest every minute");
+      await waitForJobTitle(page, gateway, { consoleMessages, pageErrors }, "Nightly cron pending");
 
       const initialRequest = await waitForCronListRequest(
         gateway,
@@ -180,7 +222,7 @@ describeControlUiE2e("Control UI cron mocked Gateway E2E", () => {
         sortBy: "nextRunAtMs",
         sortDir: "asc",
       });
-      await jobTitle(page, "Nightly cron pending").waitFor({ timeout: 10_000 });
+      await waitForJobTitle(page, gateway, { consoleMessages, pageErrors }, "Nightly cron pending");
       await expect.poll(async () => jobTitle(page, "Digest every minute").count()).toBe(0);
     } finally {
       await context.close();

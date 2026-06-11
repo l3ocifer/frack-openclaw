@@ -1,3 +1,4 @@
+// Slack plugin module implements dispatch behavior.
 import { resolveHumanDelayConfig } from "openclaw/plugin-sdk/agent-runtime";
 import {
   createStatusReactionController,
@@ -51,6 +52,7 @@ import { resolveInboundLastRouteSessionKey } from "openclaw/plugin-sdk/routing";
 import { danger, logVerbose, shouldLogVerbose, sleep } from "openclaw/plugin-sdk/runtime-env";
 import { resolvePinnedMainDmOwnerFromAllowlist } from "openclaw/plugin-sdk/security-runtime";
 import { normalizeOptionalLowercaseString } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { stripReasoningTagsFromText } from "openclaw/plugin-sdk/text-chunking";
 import { reactSlackMessage, removeSlackReaction } from "../../actions.js";
 import { createSlackDraftStream } from "../../draft-stream.js";
 import { formatSlackError } from "../../errors.js";
@@ -91,6 +93,7 @@ import {
 } from "../replies.js";
 import { dispatchReplyWithBufferedBlockDispatcher } from "../reply.runtime.js";
 import { finalizeSlackPreviewEdit } from "./preview-finalize.js";
+import { resolveSlackTimestampMs } from "./timestamp.js";
 import type { PreparedSlackMessage } from "./types.js";
 
 // Slack reactions.add/remove expect shortcode names, not raw unicode emoji.
@@ -118,14 +121,13 @@ const UNICODE_TO_SLACK: Record<string, string> = {
   "🛠️": "hammer_and_wrench",
   "💻": "computer",
 };
+const SLACK_REASONING_TAG_RE = /<\s*(\/?)\s*(?:think(?:ing)?|thought|antthinking)\b[^<>]*>/gi;
+const SLACK_REASONING_LABEL_PREFIX_RE = /^\s*(?:>\s*)?Reasoning:\s*/iu;
+const SLACK_THINKING_LABEL_PREFIX_RE = /^\s*(?:>\s*)?Thinking\.{0,3}(?=\s*(?:\n|_))/iu;
 
 function resolveSlackMessageTimestampMs(message: SlackMessageEvent): number | undefined {
   const ts = message.event_ts ?? message.ts;
-  if (!ts) {
-    return undefined;
-  }
-  const parsed = Number(ts);
-  return Number.isFinite(parsed) ? Math.trunc(parsed * 1000) : undefined;
+  return resolveSlackTimestampMs(ts);
 }
 
 function resolveSlackBotLoopProtection(
@@ -317,6 +319,76 @@ function rememberSlackStreamRecipientTeam(params: {
   }
 }
 
+function normalizeSlackReasoningProgressLine(text: string): string {
+  const taggedReasoning = extractSlackReasoningTagText(text);
+  return (taggedReasoning || stripReasoningTagsFromText(text, { mode: "strict", trim: "both" }))
+    .replace(SLACK_REASONING_LABEL_PREFIX_RE, "")
+    .replace(SLACK_THINKING_LABEL_PREFIX_RE, "")
+    .split(/\r?\n/u)
+    .map((line) => stripSimpleItalicMarkers(line))
+    .filter(Boolean)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractSlackReasoningTagText(text: string): string {
+  if (!text) {
+    return "";
+  }
+  let result = "";
+  let lastIndex = 0;
+  let inReasoning = false;
+  SLACK_REASONING_TAG_RE.lastIndex = 0;
+  for (const match of text.matchAll(SLACK_REASONING_TAG_RE)) {
+    const index = match.index ?? 0;
+    if (inReasoning) {
+      result += text.slice(lastIndex, index);
+    }
+    inReasoning = match[1] !== "/";
+    lastIndex = index + match[0].length;
+  }
+  if (inReasoning) {
+    result += text.slice(lastIndex);
+  }
+  return result.trim();
+}
+
+function stripSimpleItalicMarkers(line: string): string {
+  const trimmed = line.trim();
+  if (trimmed.length >= 2 && trimmed.startsWith("_") && trimmed.endsWith("_")) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
+function mergeSlackReasoningProgressText(
+  current: string,
+  incoming: string,
+  options?: { snapshot?: boolean },
+): string {
+  if (!current) {
+    return incoming;
+  }
+  const normalizedCurrent = normalizeSlackReasoningProgressLine(current);
+  const normalizedIncoming = normalizeSlackReasoningProgressLine(incoming);
+  if (!normalizedIncoming || normalizedIncoming === normalizedCurrent) {
+    return current;
+  }
+  if (
+    options?.snapshot === true ||
+    isSlackReasoningSnapshotText(incoming) ||
+    normalizedIncoming.startsWith(normalizedCurrent)
+  ) {
+    return incoming;
+  }
+  return `${current}${incoming}`;
+}
+
+function isSlackReasoningSnapshotText(text: string): boolean {
+  return SLACK_REASONING_LABEL_PREFIX_RE.test(text) || SLACK_THINKING_LABEL_PREFIX_RE.test(text);
+}
+
 export function resetSlackStreamRecipientTeamCacheForTests(): void {
   slackStreamRecipientTeamCache.clear();
 }
@@ -461,7 +533,7 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
       await reactSlackMessage(message.channel, reactionMessageTs ?? "", toSlackEmojiName(emoji), {
         token: ctx.botToken,
         client: ctx.app.client,
-      }).catch((err) => {
+      }).catch((err: unknown) => {
         if (formatErrorMessage(err).includes("already_reacted")) {
           return;
         }
@@ -472,7 +544,7 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
       await removeSlackReaction(message.channel, reactionMessageTs ?? "", toSlackEmojiName(emoji), {
         token: ctx.botToken,
         client: ctx.app.client,
-      }).catch((err) => {
+      }).catch((err: unknown) => {
         if (formatErrorMessage(err).includes("no_reaction")) {
           return;
         }
@@ -564,7 +636,7 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
       },
       onStartError: (err) => {
         logTypingFailure({
-          log: (message) => runtime.error?.(danger(message)),
+          log: (messageValue) => runtime.error?.(danger(messageValue)),
           channel: "slack",
           action: "start",
           target: typingTarget,
@@ -573,7 +645,7 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
       },
       onStopError: (err) => {
         logTypingFailure({
-          log: (message) => runtime.error?.(danger(message)),
+          log: (messageLocal) => runtime.error?.(danger(messageLocal)),
           channel: "slack",
           action: "stop",
           target: typingTarget,
@@ -709,11 +781,15 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
       return;
     }
     const replyThreadTs = resolveDeliveryThreadTs(params);
+    const deliveryReplyThreadTs =
+      replyDeliveryMode === "off" && !forcedReplyThreadTs && !isThreadReply
+        ? undefined
+        : replyThreadTs;
     if (
       deliveryTracker.hasDelivered({
         kind: params.kind,
         payload: params.payload,
-        threadTs: replyThreadTs,
+        threadTs: deliveryReplyThreadTs,
       })
     ) {
       logVerbose("slack: suppressed duplicate normal delivery within the same turn");
@@ -727,7 +803,7 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
       accountId: account.accountId,
       runtime,
       textLimit: ctx.textLimit,
-      replyThreadTs,
+      replyThreadTs: deliveryReplyThreadTs,
       replyToMode: replyDeliveryMode,
       ...(slackIdentity ? { identity: slackIdentity } : {}),
       ...(slackMessageMetadata ? { metadata: slackMessageMetadata } : {}),
@@ -739,7 +815,7 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
     const deliveredThreadTs = resolveDeliveredSlackReplyThreadTs({
       replyToMode: replyDeliveryMode,
       payloadReplyToId: params.payload.replyToId,
-      replyThreadTs,
+      replyThreadTs: deliveryReplyThreadTs,
     });
     // Record the thread ts only after confirmed delivery success.
     rememberDeliveredThreadTs(params.kind, deliveredThreadTs);
@@ -747,7 +823,7 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
     deliveryTracker.markDelivered({
       kind: params.kind,
       payload: params.payload,
-      threadTs: replyThreadTs,
+      threadTs: deliveryReplyThreadTs,
     });
   };
 
@@ -1088,7 +1164,7 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
       }
     }
 
-    const result = await deliverWithFinalizableLivePreviewAdapter({
+    await deliverWithFinalizableLivePreviewAdapter({
       kind: info.kind,
       payload,
       adapter: defineFinalizableLivePreviewAdapter({
@@ -1174,10 +1250,6 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
         });
       },
     });
-
-    if (result.kind === "preview-finalized") {
-      return;
-    }
   };
   const onSlackDeliveryError = (err: unknown, info: { kind: string }) => {
     runtime.error?.(danger(`slack ${info.kind} reply failed: ${formatSlackError(err)}`));
@@ -1221,6 +1293,7 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
   let lastNonEmptyPreviewToolProgressLines: ChannelProgressDraftLine[] = [];
   let appendRenderedText = "";
   let appendSourceText = "";
+  let reasoningProgressRawText = "";
   let statusUpdateCount = 0;
   let nativeProgressCompletionSent = false;
   let nativeProgressChunkKey: string | undefined;
@@ -1235,7 +1308,7 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
       return;
     }
     const progressLines =
-      useRichProgressDraft && previewToolProgressLines.length === 0
+      previewToolProgressLines.length === 0
         ? lastNonEmptyPreviewToolProgressLines
         : previewToolProgressLines;
     const previewText = formatChannelProgressDraftText({
@@ -1333,7 +1406,7 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
       return session;
     })();
     nativeProgressStreamStartPromise = startPromise;
-    let startedSession: SlackStreamSession | null = null;
+    let startedSession: SlackStreamSession | null;
     try {
       startedSession = await startPromise;
     } finally {
@@ -1420,8 +1493,8 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
         return;
       }
       const alreadyStarted = progressDraftGate.hasStarted;
-      await progressDraftGate.noteWork();
-      if (alreadyStarted && progressDraftGate.hasStarted) {
+      const progressActive = await progressDraftGate.noteWork();
+      if ((alreadyStarted || progressActive) && progressDraftGate.hasStarted) {
         await refreshStartedProgressDraft();
       }
       return;
@@ -1461,12 +1534,15 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
         await updateNativeProgressStream();
       } else {
         await progressDraftGate.startNow();
+        if (progressDraftGate.hasStarted) {
+          await updateNativeProgressStream();
+        }
       }
       return;
     }
     const alreadyStarted = progressDraftGate.hasStarted;
-    await progressDraftGate.noteWork();
-    if (alreadyStarted && progressDraftGate.hasStarted) {
+    const progressActive = await progressDraftGate.noteWork();
+    if ((alreadyStarted || progressActive) && progressDraftGate.hasStarted) {
       await refreshStartedProgressDraft();
     }
   };
@@ -1512,16 +1588,43 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
     draftStream?.update(trimmed);
     hasStreamedMessage = true;
   };
+  const pushReasoningProgress = async (payload?: {
+    text?: string;
+    isReasoningSnapshot?: boolean;
+  }) => {
+    if (!payload?.text) {
+      return;
+    }
+    reasoningProgressRawText = mergeSlackReasoningProgressText(
+      reasoningProgressRawText,
+      payload.text,
+      { snapshot: payload.isReasoningSnapshot === true },
+    );
+    const normalized = normalizeSlackReasoningProgressLine(reasoningProgressRawText);
+    if (!normalized) {
+      return;
+    }
+    await pushPreviewToolProgress({
+      id: "reasoning",
+      kind: "item",
+      text: normalized,
+      label: "Reasoning",
+    });
+  };
   const onDraftBoundary = !shouldUseDraftStream
     ? undefined
     : async () => {
-        if (hasStreamedMessage) {
+        // Progress drafts are one rolling message that's finalized in place.
+        // Keep boundary cleanup, but don't clear messageId or the next update
+        // posts a new draft instead of editing the existing preview.
+        if (hasStreamedMessage && streamMode !== "status_final") {
           draftStream?.forceNewMessage();
           hasStreamedMessage = false;
           appendRenderedText = "";
           appendSourceText = "";
           statusUpdateCount = 0;
         }
+        reasoningProgressRawText = "";
         previewToolProgressSuppressed = false;
         previewToolProgressLines = [];
       };
@@ -1567,11 +1670,16 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
               },
         onAssistantMessageStart: onDraftBoundary,
         onReasoningEnd: onDraftBoundary,
-        onReasoningStream: statusReactionsEnabled
-          ? async () => {
-              await statusReactions.setThinking();
-            }
-          : undefined,
+        onReasoningStream:
+          statusReactionsEnabled || previewToolProgressEnabled
+            ? async (payload) => {
+                await pushReasoningProgress(payload);
+                if (!statusReactionsEnabled) {
+                  return;
+                }
+                await statusReactions.setThinking();
+              }
+            : undefined,
         onToolStart: async (payload) => {
           if (statusReactionsEnabled) {
             await statusReactions.setTool(payload.name);
@@ -1759,7 +1867,7 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
   }
 
   if (dispatchError) {
-    throw dispatchError;
+    throw toLintErrorObject(dispatchError, "Slack dispatch failed");
   }
 
   // Record thread participation only when we actually delivered a reply and
@@ -1808,4 +1916,18 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
       },
     });
   }
+}
+
+function toLintErrorObject(value: unknown, fallbackMessage: string): Error {
+  if (value instanceof Error) {
+    return value;
+  }
+  if (typeof value === "string") {
+    return new Error(value);
+  }
+  const error = new Error(fallbackMessage, { cause: value });
+  if ((typeof value === "object" && value !== null) || typeof value === "function") {
+    Object.assign(error, value);
+  }
+  return error;
 }

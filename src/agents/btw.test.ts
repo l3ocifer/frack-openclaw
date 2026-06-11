@@ -1,3 +1,4 @@
+/** Tests BTW side-question execution, session context, auth, and harness routing. */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionEntry } from "../config/sessions.js";
 
@@ -158,6 +159,8 @@ const DEFAULT_USAGE = {
 };
 
 function makeAsyncEvents(events: unknown[]) {
+  // Minimal async iterable that matches provider stream shape without loading
+  // real model/runtime infrastructure.
   return {
     async *[Symbol.asyncIterator]() {
       for (const event of events) {
@@ -177,6 +180,8 @@ function createSessionEntry(overrides: Partial<SessionEntry> = {}): SessionEntry
 }
 
 function createAssistantDoneEvent(content: unknown[]) {
+  // Done events include usage/provider metadata because BTW persists the reply
+  // as a normal assistant turn.
   return {
     type: "done",
     reason: "stop",
@@ -547,6 +552,9 @@ describe("runBtwSideQuestion", () => {
     const ensureArgs = mockCall(ensureOpenClawModelsJsonMock);
     expect(ensureArgs?.[1]).toBe(DEFAULT_AGENT_DIR);
     expect(ensureArgs?.[2]).toEqual({ workspaceDir: "/tmp/workspace" });
+    expect(discoverModelsMock).toHaveBeenCalledWith(undefined, DEFAULT_AGENT_DIR, {
+      workspaceDir: "/tmp/workspace",
+    });
   });
 
   it("routes Codex-selected BTW questions through the harness side-question hook", async () => {
@@ -563,7 +571,7 @@ describe("runBtwSideQuestion", () => {
       id: "gpt-5.5",
       api: "openai-responses",
     });
-    resolveSessionAuthProfileOverrideMock.mockResolvedValue("openai-codex:work");
+    resolveSessionAuthProfileOverrideMock.mockResolvedValue("openai:work");
 
     const result = await runSideQuestion({
       provider: "openai",
@@ -592,7 +600,7 @@ describe("runBtwSideQuestion", () => {
     expect(sideQuestionParams.sessionId).toBe("session-1");
     expect(sideQuestionParams.agentId).toBe("main");
     expect(sideQuestionParams.workspaceDir).toBe("/tmp/workspace");
-    expect(sideQuestionParams.authProfileId).toBe("openai-codex:work");
+    expect(sideQuestionParams.authProfileId).toBe("openai:work");
     expect(
       (mockArg(codexSideQuestionMock, 0, 0) as { sessionFile?: string }).sessionFile,
     ).toContain("session-1.jsonl");
@@ -1006,7 +1014,7 @@ describe("runBtwSideQuestion", () => {
 
     expect(result).toEqual({ text: "Bedrock answer." });
     expect(requireApiKeyMock).not.toHaveBeenCalled();
-    const [, , options] = streamSimpleMock.mock.calls.at(-1) ?? [];
+    const options = streamSimpleMock.mock.calls.at(-1)?.[2];
     expect((options as { apiKey?: string } | undefined)?.apiKey).toBeUndefined();
   });
 

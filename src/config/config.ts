@@ -1,3 +1,4 @@
+// Public config facade for IO, mutation, runtime snapshots, paths, and shared config types.
 export {
   clearConfigCache,
   ConfigRuntimeRefreshError,
@@ -40,7 +41,9 @@ export type {
   RuntimeConfigSnapshotMetadata,
 } from "./runtime-snapshot.js";
 export type {
+  ConfigSnapshotReadOptions,
   ConfigWriteNotification,
+  ConfigWriteResult,
   ReadConfigFileSnapshotWithPluginMetadataResult,
 } from "./io.js";
 export {
@@ -57,6 +60,7 @@ export type {
   ConfigMutationCommitResult,
   ConfigMutationContext,
   ConfigMutationIO,
+  ConfigReplaceResult,
   ConfigMutationResult,
   ConfigTransformResult,
   TransformConfigFileParams,

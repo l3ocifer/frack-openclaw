@@ -17,6 +17,17 @@ paths = [
   '''(?i)\.tm\.jsonl$''',
   '''(?i)/i18n/\.i18n/''',
   '''(?i)/homelab/shared/archive/''',
+  # Upstream OpenClaw test/docs fixtures use realistic-looking fake keys
+  # (redaction tests, QA-lab live-transport stubs, API doc curl examples).
+  # 2026-06-11 upstream sync brought ~200 such false positives.
+  '''\.test\.(ts|tsx|js|mjs)$''',
+  '''\.test-helpers\.ts$''',
+  '''test-fixtures\.ts$''',
+  '''^docs/''',
+  '''^dist/''',
+  '''^\.artifacts/''',
+  '''^extensions/qa-lab/''',
+  '''^extensions/qa-matrix/''',
 ]
 regexes = [
   '''(?i)example[_-]?(api[_-]?)?key''',
@@ -26,4 +37,12 @@ regexes = [
   '''(?i)<your[_-].+>''',
   '''(?i)<paste[_-].+>''',
   '''(?i)PUT[_-]YOUR[_-]''',
+  # Shell env-var references in docs/runbooks (e.g. curl -u "$STRIPE_KEY:")
+  # are not secrets.
+  '''^"?\$\{?[A-Z][A-Z0-9_]*\}?:?"?$''',
+  # Upstream identifiers that pattern-match secret rules but are code symbols.
+  '''^resolveDiscord[A-Za-z]+$''',
+  '''^MattermostWebSocketFactory$''',
+  # xAI public OAuth client ID (PKCE flow; public by design).
+  '''^b1a00492-073a-47ea-816f-4c329264a828$''',
 ]

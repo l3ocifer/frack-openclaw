@@ -53,7 +53,15 @@
             reasoning: false,
             input: ["text"],
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-            contextWindow: 20480,
+            // 32768 (was 20480): the embedded harness mid-turn precheck pins its
+            // reserve at 16384 regardless of compaction.reserveTokens, and
+            // minPromptBudget=8000. At 20480 that left a negative/near-zero prompt
+            // budget and wedged multi-message a2a mission threads in a
+            // compact->truncate->retry loop (same class of bug fixed on puck
+            // 2026-06-03). 32768 yields promptBudget=16384; worst-case request
+            // 16384 prompt + 4096 output = 20480 stays under vllm-chat
+            // max_model_len 24576 (no backend overflow for normal traffic).
+            contextWindow: 32768,
             maxTokens: 4096,
           },
           {
@@ -231,12 +239,16 @@
     allow: ["read", "exec", "write", "edit", "web_search", "browser"],
     exec: {
       host: "gateway",
-      // ASK MODE: schema enum off|on-miss|always. Frack acts on production
-      // so always confirm. KILLSWITCH-gated tools (kubectl_delete on
-      // protected resources, git_push, send_external_email, stripe_charge,
-      // stripe_refund, postiz_publish) require explicit `:y` from Leo.
-      ask: "always",
-      security: "allowlist",  // schema enum: deny|allowlist|full
+      // ASK MODE: schema enum off|on-miss|always. Full fleet autonomy
+      // (operator decision 2026-06-03): Frack runs unattended in a sandboxed
+      // pod, so per-command prompts wedge mission turns (no interactive
+      // approver). ask:"off" = never prompt. KILLSWITCH.md still gates the
+      // genuinely destructive *external* tools (kubectl_delete on protected
+      // resources, git_push, send_external_email, stripe_charge, stripe_refund,
+      // postiz_publish) with an explicit `:y`, so production-mutating external
+      // actions remain confirmed even with local exec autonomous.
+      ask: "off",
+      security: "full",  // schema enum: deny|allowlist|full — allow any local command in-pod
     },
     // NOTE: the previous `confirm` array was not in the upstream
     // ToolsSchema. Per-tool confirmation now lives in the killswitch
@@ -257,7 +269,10 @@
   gateway: {
     mode: "local",  // schema enum: local|remote — pod foreground == "local"
     port: 18789,
-    bind: "0.0.0.0",   // expose on Service; Authelia in front
+    // Upstream OpenClaw tightened the schema (2026-05): bind must be one of
+    // auto|lan|loopback|custom|tailnet. `lan` binds 0.0.0.0 on cluster-internal
+    // interfaces, which is what the Service in front of us expects.
+    bind: "lan",   // expose on Service; Authelia in front
   },
 
   // NOTE: channels intentionally omitted. The upstream channel-plugin

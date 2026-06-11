@@ -139,7 +139,7 @@ jobs:
           fi
 
       - name: Checkout trusted workflow helper
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
           ref: ${{ github.ref_name }}
@@ -160,7 +160,7 @@ jobs:
 
       - name: Checkout selected ref for reachability fallback
         if: steps.fast_ref.outputs.fallback == 'true'
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
           ref: ${{ inputs.ref }}
@@ -428,7 +428,7 @@ jobs:
       source_sha: ${{ steps.package.outputs.source_sha }}
     steps:
       - name: Checkout trusted workflow ref
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
           ref: ${{ github.ref_name }}
@@ -481,7 +481,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload release package artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-package-under-test
           path: |
@@ -710,7 +710,7 @@ jobs:
       OPENCLAW_ENABLE_PRIVATE_QA_CLI: "1"
     steps:
       - name: Checkout selected ref
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
           ref: ${{ needs.resolve_target.outputs.revision }}
@@ -760,7 +760,7 @@ jobs:
 
       - name: Upload parity lane artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-qa-parity-${{ matrix.lane }}-${{ needs.resolve_target.outputs.revision }}
           path: .artifacts/qa-e2e/
@@ -782,7 +782,7 @@ jobs:
       OPENCLAW_ENABLE_PRIVATE_QA_CLI: "1"
     steps:
       - name: Checkout selected ref
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
           ref: ${{ needs.resolve_target.outputs.revision }}
@@ -796,7 +796,7 @@ jobs:
           install-bun: "true"
 
       - name: Download parity lane artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: release-qa-parity-*-${{ needs.resolve_target.outputs.revision }}
           path: .artifacts/qa-e2e/
@@ -819,7 +819,7 @@ jobs:
 
       - name: Upload parity artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-qa-parity-${{ needs.resolve_target.outputs.revision }}
           path: .artifacts/qa-e2e/
@@ -842,7 +842,7 @@ jobs:
       OPENCLAW_ENABLE_PRIVATE_QA_CLI: "1"
     steps:
       - name: Checkout selected ref
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
           ref: ${{ needs.resolve_target.outputs.revision }}
@@ -899,7 +899,7 @@ jobs:
 
       - name: Upload Matrix QA artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-qa-live-matrix-${{ needs.resolve_target.outputs.revision }}
           path: .artifacts/qa-e2e/
@@ -922,7 +922,7 @@ jobs:
       OPENCLAW_ENABLE_PRIVATE_QA_CLI: "1"
     steps:
       - name: Checkout selected ref
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
           ref: ${{ needs.resolve_target.outputs.revision }}
@@ -995,7 +995,7 @@ jobs:
 
       - name: Upload Telegram QA artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-qa-live-telegram-${{ needs.resolve_target.outputs.revision }}
           path: .artifacts/qa-e2e/
@@ -1018,7 +1018,7 @@ jobs:
       OPENCLAW_ENABLE_PRIVATE_QA_CLI: "1"
     steps:
       - name: Checkout selected ref
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
           ref: ${{ needs.resolve_target.outputs.revision }}
@@ -1091,7 +1091,7 @@ jobs:
 
       - name: Upload Discord QA artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-qa-live-discord-${{ needs.resolve_target.outputs.revision }}
           path: .artifacts/qa-e2e/
@@ -1114,7 +1114,7 @@ jobs:
       OPENCLAW_ENABLE_PRIVATE_QA_CLI: "1"
     steps:
       - name: Checkout selected ref
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
           ref: ${{ needs.resolve_target.outputs.revision }}
@@ -1187,7 +1187,7 @@ jobs:
 
       - name: Upload WhatsApp QA artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-qa-live-whatsapp-${{ needs.resolve_target.outputs.revision }}
           path: .artifacts/qa-e2e/
@@ -1210,7 +1210,7 @@ jobs:
       OPENCLAW_ENABLE_PRIVATE_QA_CLI: "1"
     steps:
       - name: Checkout selected ref
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
           ref: ${{ needs.resolve_target.outputs.revision }}
@@ -1283,7 +1283,7 @@ jobs:
 
       - name: Upload Slack QA artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-qa-live-slack-${{ needs.resolve_target.outputs.revision }}
           path: .artifacts/qa-e2e/

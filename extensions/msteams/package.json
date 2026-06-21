@@ -9,18 +9,18 @@
   "type": "module",
   "dependencies": {
     "@azure/identity": "4.13.1",
-    "@microsoft/teams.api": "2.0.12",
-    "@microsoft/teams.apps": "2.0.12",
+    "@microsoft/teams.api": "2.0.13",
+    "@microsoft/teams.apps": "2.0.13",
     "express": "5.2.1",
-    "typebox": "1.1.39"
+    "typebox": "1.2.18"
   },
   "devDependencies": {
     "@openclaw/plugin-sdk": "workspace:*",
     "jose": "6.2.3",
-    "openclaw": "2026.5.28"
+    "openclaw": "2026.6.8"
   },
   "peerDependencies": {
-    "openclaw": ">=2026.6.2"
+    "openclaw": ">=2026.6.8"
   },
   "peerDependenciesMeta": {
     "openclaw": {

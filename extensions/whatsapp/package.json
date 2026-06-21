@@ -10,14 +10,14 @@
   "dependencies": {
     "audio-decode": "2.2.3",
     "baileys": "7.0.0-rc13",
-    "typebox": "1.1.39"
+    "typebox": "1.2.18"
   },
   "devDependencies": {
     "@openclaw/plugin-sdk": "workspace:*",
-    "openclaw": "2026.5.28"
+    "openclaw": "2026.6.8"
   },
   "peerDependencies": {
-    "openclaw": ">=2026.6.2"
+    "openclaw": ">=2026.6.8"
   },
   "peerDependenciesMeta": {
     "openclaw": {

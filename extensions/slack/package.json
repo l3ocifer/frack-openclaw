@@ -10,16 +10,16 @@
   "dependencies": {
     "@slack/bolt": "4.7.3",
     "@slack/types": "2.21.1",
-    "@slack/web-api": "7.16.0",
-    "typebox": "1.1.39",
+    "@slack/web-api": "7.17.0",
+    "typebox": "1.2.19",
     "zod": "4.4.3"
   },
   "devDependencies": {
     "@openclaw/plugin-sdk": "workspace:*",
-    "openclaw": "2026.5.28"
+    "openclaw": "2026.6.9"
   },
   "peerDependencies": {
-    "openclaw": ">=2026.6.2"
+    "openclaw": ">=2026.6.9"
   },
   "peerDependenciesMeta": {
     "openclaw": {

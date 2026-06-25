@@ -49,7 +49,7 @@
         models: [
           {
             id: "chat",
-            name: "Frack default chat (vllm-chat / Qwen3.5 27B AWQ)",
+            name: "Frack default chat (vllm-chat / Qwen3.6-27B AWQ-INT4)",
             reasoning: false,
             input: ["text"],
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -253,23 +253,30 @@
   tools: {
     profile: "full",  // schema enum: minimal|coding|messaging|full. Frack runs production.
     // tools.allow is an allowlist matched against the ACTUAL runtime tool ids.
-    // After the 2026-06-24 upstream sync the filesystem / web / memory tools ship
-    // as *bundled* tools named file_write / file_fetch / dir_list / dir_fetch /
-    // web_fetch / memory_search / memory_get / message — NOT the legacy abstract
-    // capability names read/write/exec/edit. The old list matched almost nothing,
-    // so the effective-tool-policy second pass stripped 31 bundled tools on every
-    // turn (logged: "tool policy removed 31 tool(s) via tools.allow"), including
-    // file_write — which is why even a turn that completed could never persist a
-    // deliverable to /data/graphs. List the real ids explicitly (the legacy core
-    // names are kept too: they harmlessly match the pass-1 core tools). Heavy
-    // unused media/UI tools (image/image_generate/video_generate/tts/canvas/pdf/
-    // nodes/gateway/cron/subagents/sessions_*) are intentionally omitted to keep
-    // the system prompt within the chat backend's 24576-token window.
+    // CORRECTION (verified live 2026-06-25, OpenClaw 2026.6.10): the bundled
+    // file_write / file_fetch / dir_fetch / dir_list tools are the NODE
+    // file-transfer tools — they take a `node` + `contentBase64`/`sourceMediaId`
+    // and require a *paired node* from `nodes status`. Frack runs as a single
+    // cluster pod with NO paired nodes, so every file_write to those tools fails:
+    //   "file_write failed: contentBase64 or sourceMediaId required"
+    //   "file_write failed: no paired nodes available; ... Use local file/exec
+    //    tools for local workspace paths."
+    // Local workspace filesystem writes go through the CORE pass-1 tools
+    // read / write / edit / apply_patch / exec (see tool-catalog.ts section "fs"),
+    // which write directly to the pod filesystem (e.g. /data/graphs). Listing the
+    // node file_* tools here previously lured the model into 2–3 wasted transfer
+    // turns before it fell back to `write`. They are therefore REMOVED. The
+    // deliverable-persistence failures seen before today were the context-overflow
+    // precheck killing the turn (now fixed via contextWindow), not a missing write
+    // tool — `write` has always been allowed. Heavy unused media/UI/nodes tools
+    // (image/image_generate/video_generate/tts/canvas/pdf/nodes/gateway/cron/
+    // subagents/sessions_*) stay omitted to keep the system prompt within the chat
+    // backend's 24576-token window.
     allow: [
-      "read", "exec", "write", "edit", "web_search", "browser",
-      "file_fetch", "file_write", "dir_list", "dir_fetch",
-      "web_fetch", "process", "memory_search", "memory_get",
-      "message", "update_plan", "update_goal",
+      "read", "write", "edit", "apply_patch", "exec", "process",
+      "web_search", "web_fetch", "browser",
+      "memory_search", "memory_get",
+      "message", "update_plan", "update_goal", "get_goal", "create_goal",
     ],
     exec: {
       host: "gateway",

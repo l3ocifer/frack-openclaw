@@ -111,6 +111,8 @@ COPY --from=build /app/skills        /opt/openclaw/skills
 # this COPY the primary candidate /opt/openclaw/src/agents/templates is
 # missing and every heartbeat tick fails "Missing workspace template".
 COPY --from=build /app/src/agents/templates /opt/openclaw/src/agents/templates
+# Redeploy 2026-06-25: rebuild after the A2A ingress handler restoration; the
+# prior build-and-push run was preempted by a concurrent fleet fan-out.
 RUN ln -sf /opt/openclaw/openclaw.mjs /usr/local/bin/openclaw \
  && chmod 755 /opt/openclaw/openclaw.mjs
 

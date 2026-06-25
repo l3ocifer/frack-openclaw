@@ -158,7 +158,20 @@
       // harness now uses, since OpenClaw inherits the agent's model
       // when no per-runtime override exists.
       workspace: "/root/.openclaw/workspace",
-      compaction: { mode: "safeguard" },
+      // reserveTokens lowered from the 16384 default -> 6000. The pre-prompt /
+      // mid-turn overflow precheck reserves this many tokens from contextWindow
+      // BEFORE computing the prompt budget (settingsManager.getCompactionReserveTokens(),
+      // read live by the synced image — the older "pinned at 16384 regardless of
+      // compaction.reserveTokens" note on the chat model was stale). At the 16384
+      // default a 32768 window left only 16384 prompt budget, below Frack's ~21K
+      // base system prompt, so EVERY turn (even messages=0 heartbeats and inbound
+      // a2a missions) failed the precheck with "Context overflow ... (precheck)"
+      // and never reached the model. 6000 yields promptBudget=26768 — comfortably
+      // above the ~21K base and the ~22K accumulated a2a session — while the
+      // worst-case actual request (prompt + 4096 output) stays under vllm-chat
+      // max_model_len 24576 for normal (short) mission turns. Matches the proven
+      // puck reserveTokens fix (STATUS S11).
+      compaction: { mode: "safeguard", reserveTokens: 6000 },
       contextPruning: { mode: "cache-ttl", ttl: "1h" },
       maxConcurrent: 4,
       thinkingDefault: "low",
@@ -236,7 +249,25 @@
 
   tools: {
     profile: "full",  // schema enum: minimal|coding|messaging|full. Frack runs production.
-    allow: ["read", "exec", "write", "edit", "web_search", "browser"],
+    // tools.allow is an allowlist matched against the ACTUAL runtime tool ids.
+    // After the 2026-06-24 upstream sync the filesystem / web / memory tools ship
+    // as *bundled* tools named file_write / file_fetch / dir_list / dir_fetch /
+    // web_fetch / memory_search / memory_get / message — NOT the legacy abstract
+    // capability names read/write/exec/edit. The old list matched almost nothing,
+    // so the effective-tool-policy second pass stripped 31 bundled tools on every
+    // turn (logged: "tool policy removed 31 tool(s) via tools.allow"), including
+    // file_write — which is why even a turn that completed could never persist a
+    // deliverable to /data/graphs. List the real ids explicitly (the legacy core
+    // names are kept too: they harmlessly match the pass-1 core tools). Heavy
+    // unused media/UI tools (image/image_generate/video_generate/tts/canvas/pdf/
+    // nodes/gateway/cron/subagents/sessions_*) are intentionally omitted to keep
+    // the system prompt within the chat backend's 24576-token window.
+    allow: [
+      "read", "exec", "write", "edit", "web_search", "browser",
+      "file_fetch", "file_write", "dir_list", "dir_fetch",
+      "web_fetch", "process", "memory_search", "memory_get",
+      "message", "update_plan", "update_goal",
+    ],
     exec: {
       host: "gateway",
       // ASK MODE: schema enum off|on-miss|always. Full fleet autonomy

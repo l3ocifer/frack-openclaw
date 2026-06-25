@@ -28,6 +28,12 @@ paths = [
   '''^\.artifacts/''',
   '''^extensions/qa-lab/''',
   '''^extensions/qa-matrix/''',
+  # Swift unit-test files carry deterministic key/identity test vectors
+  # (e.g. OpenClawKitTests/DeviceIdentityStoreTests.swift uses fixed Ed25519
+  # fixtures whose bytes are 0x00..0x1f). The 2026-06-24 upstream sync
+  # surfaced these as generic-api-key false positives. Mirrors the existing
+  # `.test.ts` fixture allowlist; does not weaken detection of real secrets.
+  '''(?i)/Tests/.*Tests\.swift$''',
 ]
 regexes = [
   '''(?i)example[_-]?(api[_-]?)?key''',

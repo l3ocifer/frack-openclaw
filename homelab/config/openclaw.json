@@ -198,12 +198,12 @@
           modelPath: "hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf",
         },
         // SQLite-backed vector store on the agent's writable workspace.
-        // Postgres-pgvector is not in the upstream MemorySearchStoreSchema;
-        // session memory continues to live in the postgres `frack_memory`
-        // schema via the agent's own SQL adapters (DATABASE_URL env).
+        // Upstream MemorySearchStoreSchema is strict and dropped `store.path`
+        // (memory indexes now live in each agent's database), so only the
+        // supported driver + vector keys are valid here. Session memory still
+        // lives in the postgres `frack_memory` schema via DATABASE_URL.
         store: {
           driver: "sqlite",
-          path: "/root/.openclaw/workspace-rw/memory/index.sqlite",
           vector: { enabled: true },
         },
         sync: {

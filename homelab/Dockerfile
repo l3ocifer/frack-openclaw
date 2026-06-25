@@ -127,3 +127,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "/opt/openclaw/openclaw.mjs", "gateway", "--bind", "lan", "--port", "18789", "--allow-unconfigured"]
+
+# ci: re-trigger homelab build 20260625T182233Z (warm-cache run; prior run reaped under fleet load)

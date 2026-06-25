@@ -175,15 +175,15 @@
         // Multi-graph: own graph (RW), Leo's PKM (R+restricted W),
         // siblings R-only. Mounted via hostPath on thebeast.
         extraPaths: [
-          "/srv/graphs/frack/pages/ai-memory",
-          "/srv/graphs/frack/journals",
-          "/srv/graphs/frack/pages",
-          "/srv/graphs/leo/pages",
-          "/srv/graphs/leo/journals",
-          "/srv/graphs/frick/pages/ai-memory",
-          "/srv/graphs/frick/journals",
-          "/srv/graphs/sancho/pages/ai-memory",
-          "/srv/graphs/sancho/journals",
+          "/data/graphs/frack/pages/ai-memory",
+          "/data/graphs/frack/journals",
+          "/data/graphs/frack/pages",
+          "/data/graphs/leo/pages",
+          "/data/graphs/leo/journals",
+          "/data/graphs/frick/pages/ai-memory",
+          "/data/graphs/frick/journals",
+          "/data/graphs/sancho/pages/ai-memory",
+          "/data/graphs/sancho/journals",
         ],
         // Embedding provider — point `remote.baseUrl` at LiteLLM's
         // OpenAI-compatible /v1 endpoint and use the `embed` model.

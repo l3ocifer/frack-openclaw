@@ -105,6 +105,12 @@ COPY --from=build /app/node_modules  /opt/openclaw/node_modules
 COPY --from=build /app/package.json  /opt/openclaw/package.json
 COPY --from=build /app/openclaw.mjs  /opt/openclaw/openclaw.mjs
 COPY --from=build /app/skills        /opt/openclaw/skills
+# Workspace bootstrap templates (HEARTBEAT.md, etc.) are read from
+# <packageRoot>/src/agents/templates at runtime (see
+# src/agents/workspace-templates.ts). The bundle ships as dist/, so without
+# this COPY the primary candidate /opt/openclaw/src/agents/templates is
+# missing and every heartbeat tick fails "Missing workspace template".
+COPY --from=build /app/src/agents/templates /opt/openclaw/src/agents/templates
 RUN ln -sf /opt/openclaw/openclaw.mjs /usr/local/bin/openclaw \
  && chmod 755 /opt/openclaw/openclaw.mjs
 

@@ -307,6 +307,26 @@
     },
   },
 
+  // Federated MCP servers (homelab `mcp` namespace). Frack runs the 12
+  // production apps: forgejo for issues/PRs/CI on those repos, argocd for
+  // READ-ONLY prod-app deploy status (sync/rollback excluded — that's
+  // Frick/Vetinari's call). See homelab/docs/agent-mcp-integration.md.
+  mcp: {
+    servers: {
+      forgejo: {
+        url: "http://forgejo-mcp.mcp.svc.cluster.local:3000/mcp",
+        transport: "streamable-http",
+      },
+      argocd: {
+        url: "http://argocd-mcp.mcp.svc.cluster.local:3000/mcp",
+        transport: "streamable-http",
+        toolFilter: {
+          exclude: ["sync_application", "delete_*", "*rollback*", "*terminate*"],
+        },
+      },
+    },
+  },
+
   gateway: {
     mode: "local",  // schema enum: local|remote — pod foreground == "local"
     port: 18789,

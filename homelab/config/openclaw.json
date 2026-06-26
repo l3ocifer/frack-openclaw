@@ -311,11 +311,16 @@
   // production apps: forgejo for issues/PRs/CI on those repos, argocd for
   // READ-ONLY prod-app deploy status (sync/rollback excluded — that's
   // Frick/Vetinari's call). See homelab/docs/agent-mcp-integration.md.
+  // Central MCP gateway (ContextForge) — one endpoint merging the shared
+  // backends (forgejo, grafana, home-assistant, k8s/postgres read-only).
+  // Add/update servers centrally in
+  // homelab/argocd/apps/_mcp/70-mcp-gateway.yaml. Frack keeps a
+  // read-filtered argocd direct for prod-app status (not in the gateway).
   mcp: {
     servers: {
-      forgejo: {
-        url: "http://forgejo-mcp.mcp.svc.cluster.local:3000/mcp",
-        transport: "streamable-http",
+      gateway: {
+        url: "http://mcp-gateway.mcp.svc.cluster.local:8080/sse",
+        transport: "sse",
       },
       argocd: {
         url: "http://argocd-mcp.mcp.svc.cluster.local:3000/mcp",

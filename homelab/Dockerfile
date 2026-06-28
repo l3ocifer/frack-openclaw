@@ -19,7 +19,7 @@
 # syntax=docker/dockerfile:1.7
 
 # ─── Stage 1: build ──────────────────────────────────────────────────
-FROM node:24-bookworm AS build
+FROM node:24.18.0-bookworm AS build
 
 # Bun for build scripts (mirrors upstream)
 RUN curl --retry 5 --retry-all-errors --retry-delay 2 -fsSL https://bun.sh/install | bash
@@ -51,7 +51,7 @@ RUN pnpm build:docker || pnpm build || true
 RUN pnpm ui:build || true
 
 # ─── Stage 2: runtime ────────────────────────────────────────────────
-FROM node:24-bookworm-slim
+FROM node:24.18.0-bookworm-slim
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \

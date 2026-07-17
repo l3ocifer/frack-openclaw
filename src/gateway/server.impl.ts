@@ -2077,7 +2077,20 @@ export async function startGatewayServer(
       let resultPayload: unknown;
       let resultError: unknown;
       const { chatHandlers } = await import("./server-methods/chat.js");
-      await chatHandlers["chat.send"]({
+      const chatSendHandler = chatHandlers["chat.send"];
+      if (!chatSendHandler) {
+        writeA2aJson(
+          res,
+          500,
+          a2aJsonRpcResult(body.id, {
+            id: taskId,
+            status: { state: "failed" },
+            details: "chat.send handler unavailable",
+          }),
+        );
+        return true;
+      }
+      await chatSendHandler({
         req: { type: "req", id: `a2a-${taskId}`, method: "chat.send" },
         client: null,
         isWebchatConnect: () => false,

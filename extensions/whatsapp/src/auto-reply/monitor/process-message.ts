@@ -4,11 +4,7 @@ import {
   removeAckReactionHandleAfterReply,
   type AckReactionHandle,
 } from "openclaw/plugin-sdk/channel-feedback";
-import {
-  runChannelInboundEvent,
-  type CommandTurnContext,
-} from "openclaw/plugin-sdk/channel-inbound";
-import { recordInboundSession } from "openclaw/plugin-sdk/conversation-runtime";
+import { runChannelInboundEvent } from "openclaw/plugin-sdk/channel-inbound";
 import {
   createInternalHookEvent,
   deriveInboundMessageHookContext,
@@ -422,36 +418,22 @@ export async function processMessage(params: {
   }
 
   const sender = getSenderIdentity(params.msg);
+  const commandBody = params.msg.payload.commandBody ?? params.msg.payload.body;
   const dmRouteTarget = resolveWhatsAppDmRouteTarget({
     msg: params.msg,
     senderE164: sender.e164 ?? undefined,
     normalizeE164,
   });
-  const shouldCheckCommandAuth = shouldComputeCommandAuthorized(
-    params.msg.payload.body,
-    params.cfg,
-  );
-  const isTextCommand = isControlCommandMessage(params.msg.payload.body, params.cfg);
+  const shouldCheckCommandAuth = shouldComputeCommandAuthorized(commandBody, params.cfg);
+  const isTextCommand = isControlCommandMessage(commandBody, params.cfg);
   const commandAuthorized = shouldCheckCommandAuth
     ? await resolveWhatsAppCommandAuthorized({
         cfg: params.cfg,
         msg: params.msg,
         policy: inboundPolicy,
+        authDir: account.authDir,
       })
     : undefined;
-  const commandTurn: CommandTurnContext = isTextCommand
-    ? {
-        kind: "text-slash",
-        source: "text",
-        authorized: Boolean(commandAuthorized),
-        body: params.msg.payload.body,
-      }
-    : {
-        kind: "normal",
-        source: "message",
-        authorized: false,
-        body: params.msg.payload.body,
-      };
   const { onModelSelected, ...replyPipeline } = createChannelMessageReplyPipeline({
     cfg: params.cfg,
     agentId: params.route.agentId,
@@ -484,14 +466,16 @@ export async function processMessage(params: {
   const ctxPayload = await buildWhatsAppInboundContext({
     bodyForAgent: msgForAgent.payload.body,
     combinedBody,
-    commandBody: params.msg.payload.body,
-    commandAuthorized,
-    commandTurn,
+    command: {
+      kind: isTextCommand ? "text-slash" : "normal",
+      body: commandBody,
+      authorized: commandAuthorized,
+    },
     groupHistory: visibleGroupHistory,
     groupMemberRoster: params.groupMemberNames.get(params.groupHistoryKey),
     groupSystemPrompt: conversationSystemPrompt,
     msg: params.msg,
-    rawBody: params.msg.payload.body,
+    rawBody: commandBody,
     route: params.route,
     sender: {
       id: getPrimaryIdentityId(sender) ?? undefined,
@@ -559,12 +543,11 @@ export async function processMessage(params: {
         };
       },
       resolveTurn: () => ({
+        cfg: params.cfg,
         channel: "whatsapp",
         accountId: params.route.accountId,
-        routeSessionKey: params.route.sessionKey,
-        storePath,
+        route: { agentId: params.route.agentId, sessionKey: params.route.sessionKey },
         ctxPayload,
-        recordInboundSession,
         record: {
           onRecordError: (err) => {
             params.replyLogger.warn(

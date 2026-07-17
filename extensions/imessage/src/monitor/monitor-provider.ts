@@ -7,6 +7,7 @@ import { CHANNEL_APPROVAL_NATIVE_RUNTIME_CONTEXT_CAPABILITY } from "openclaw/plu
 import { logTypingFailure } from "openclaw/plugin-sdk/channel-feedback";
 import {
   createChannelInboundDebouncer,
+  formatInboundMediaUnavailableText,
   resolveEnvelopeFormatOptions,
   runChannelInboundEvent,
   shouldDebounceTextInbound,
@@ -22,9 +23,10 @@ import {
   readChannelAllowFromStore,
   upsertChannelPairingRequest,
 } from "openclaw/plugin-sdk/conversation-runtime";
-import { recordInboundSession } from "openclaw/plugin-sdk/conversation-runtime";
+import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
 import { normalizeScpRemoteHost } from "openclaw/plugin-sdk/host-runtime";
 import { isInboundPathAllowed, kindFromMime } from "openclaw/plugin-sdk/media-runtime";
+import type { ChannelReplayClaimHandle } from "openclaw/plugin-sdk/persistent-dedupe";
 import { DEFAULT_GROUP_HISTORY_LIMIT, type HistoryEntry } from "openclaw/plugin-sdk/reply-history";
 import { resolveTextChunkLimit, type GetReplyOptions } from "openclaw/plugin-sdk/reply-runtime";
 import { dispatchInboundMessage } from "openclaw/plugin-sdk/reply-runtime";
@@ -45,7 +47,7 @@ import {
   resolveSendPolicy,
   resolveStorePath,
 } from "openclaw/plugin-sdk/session-store-runtime";
-import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
+import { sliceUtf16Safe, truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import { waitForTransportReady } from "openclaw/plugin-sdk/transport-ready-runtime";
 import { resolveIMessageAccount } from "../accounts.js";
 import { pollPendingIMessageApprovalReactions } from "../approval-reaction-poller.js";
@@ -84,18 +86,16 @@ import {
 } from "./group-allowlist-warnings.js";
 import {
   buildIMessageInboundReplayKey,
-  claimIMessageInboundReplay,
-  commitIMessageInboundReplay,
   createIMessageInboundReplayGuard,
   IMESSAGE_RECOVERY_MAX_AGE_MS,
   IMESSAGE_RECOVERY_MAX_ROWS,
   IMESSAGE_STALE_INBOUND_THRESHOLD_MS,
   isStaleIMessageBacklog,
-  releaseIMessageInboundReplay,
 } from "./inbound-dedupe.js";
 import {
   buildDirectIMessageReplyTarget,
   buildIMessageInboundContext,
+  mergeIMessageGroupAllowFromWithLegacyChatTargets,
   rememberIMessageSkippedFromMeForSelfChatDedupe,
   resolveIMessageReactionContext,
   resolveIMessageInboundDecision,
@@ -103,11 +103,17 @@ import {
 import { createLoopRateLimiter } from "./loop-rate-limiter.js";
 import { stageIMessageAttachments } from "./media-staging.js";
 import { parseIMessageNotification } from "./parse-notification.js";
+import { createPollCommentFolder } from "./poll-comment.js";
+import { renderIMessagePollBody } from "./poll-render.js";
 import { enqueueIMessageReactionSystemEvent } from "./reaction-system-event.js";
-import { advanceIMessageRecoveryCursor, loadIMessageRecoveryCursor } from "./recovery-cursor.js";
+import {
+  advanceIMessageRecoveryCursor,
+  loadIMessageRecoveryCursor,
+  resolveIMessageRecoveryCursorDbIdentity,
+} from "./recovery-cursor.js";
 import { normalizeAllowList, resolveRuntime } from "./runtime.js";
 import { createSelfChatCache } from "./self-chat-cache.js";
-import type { IMessagePayload, MonitorIMessageOpts } from "./types.js";
+import type { IMessageAttachment, IMessagePayload, MonitorIMessageOpts } from "./types.js";
 import { sanitizeIMessageWatchErrorPayload } from "./watch-error-log.js";
 
 const WATCH_SUBSCRIBE_MAX_ATTEMPTS = 3;
@@ -156,19 +162,67 @@ function isIMessagePluginPayloadAttachment(attachment: {
   );
 }
 
-function isIMessagePluginPayloadAttachment(attachment: {
-  original_path?: string | null;
-  transfer_name?: string | null;
-  uti?: string | null;
-}): boolean {
-  const attachmentPath = attachment.original_path?.trim().toLowerCase() ?? "";
-  const transferName = attachment.transfer_name?.trim().toLowerCase() ?? "";
-  const uti = attachment.uti?.trim().toLowerCase() ?? "";
-  return (
-    attachmentPath.endsWith(".pluginpayloadattachment") ||
-    transferName.endsWith(".pluginpayloadattachment") ||
-    uti === "com.apple.messages.pluginpayloadattachment"
+function resolveIMessageInboundMediaInput(params: {
+  messageText: string;
+  attachments: IMessageAttachment[];
+  effectiveAttachmentRoots: readonly string[];
+  logVerbose?: (message: string) => void;
+}) {
+  // Apple rich-link previews are opaque plugin payloads; the useful URL stays
+  // in message text. Treating them as media creates phantom attachments and
+  // keeps split-send URL previews out of the text debounce path.
+  const mediaCandidates = params.attachments.filter(
+    (entry) => !isIMessagePluginPayloadAttachment(entry),
   );
+  const rawMediaAttachments = mediaCandidates.flatMap((attachment) => {
+    const attachmentPath = attachment.original_path?.trim();
+    if (!attachmentPath || attachment.missing) {
+      return [];
+    }
+    if (
+      !isInboundPathAllowed({ filePath: attachmentPath, roots: params.effectiveAttachmentRoots })
+    ) {
+      params.logVerbose?.(
+        `imessage: dropping inbound attachment outside allowed roots: ${attachmentPath}`,
+      );
+      return [];
+    }
+    return [{ path: attachmentPath, contentType: attachment.mime_type ?? undefined }];
+  });
+  const kind = kindFromMime(
+    rawMediaAttachments[0]?.contentType ?? mediaCandidates[0]?.mime_type ?? undefined,
+  );
+  const mediaPlaceholder = kind
+    ? `<media:${kind}>`
+    : mediaCandidates.length
+      ? "<media:attachment>"
+      : "";
+  return {
+    bodyText: params.messageText || mediaPlaceholder,
+    mediaPlaceholder,
+    mediaCandidates,
+    rawMediaAttachments,
+  };
+}
+
+function formatIMessageInboundMediaBody(params: {
+  messageText: string;
+  optimisticPlaceholder: string;
+  mediaAttachments: Array<{ contentType?: string }>;
+  unavailableCount: number;
+}): string {
+  const materializedKind = kindFromMime(params.mediaAttachments[0]?.contentType);
+  const materializedPlaceholder = materializedKind
+    ? `<media:${materializedKind}>`
+    : params.mediaAttachments.length > 0
+      ? "<media:attachment>"
+      : "";
+  return formatInboundMediaUnavailableText({
+    body: params.messageText || materializedPlaceholder || params.optimisticPlaceholder,
+    mediaPlaceholder:
+      params.mediaAttachments.length === 0 ? params.optimisticPlaceholder : undefined,
+    notice: `[imessage ${params.unavailableCount > 1 ? `${params.unavailableCount} attachments` : "attachment"} unavailable]`,
+  });
 }
 
 async function detectRemoteHostFromCliPath(cliPath: string): Promise<string | undefined> {
@@ -303,11 +357,11 @@ const IMESSAGE_DIAGNOSTIC_DROP_REASONS = new Set([
 ]);
 const IMESSAGE_THROTTLED_DIAGNOSTIC_DROP_REASONS = new Set(["from me"]);
 
-export function shouldThrottleIMessageInboundDropDiagnostic(reason: string): boolean {
+function shouldThrottleIMessageInboundDropDiagnostic(reason: string): boolean {
   return IMESSAGE_THROTTLED_DIAGNOSTIC_DROP_REASONS.has(reason);
 }
 
-export function describeIMessageInboundDropDiagnostic(params: {
+function describeIMessageInboundDropDiagnostic(params: {
   accountId: string;
   reason: string;
   message: Pick<IMessagePayload, "chat_id" | "created_at" | "guid" | "id" | "is_group">;
@@ -415,9 +469,16 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
     accountId: accountInfo.accountId,
     log: (message) => runtime.log?.(warn(message)),
   });
+  // Mirror the runtime gate's effective sender allowlist so the startup
+  // warning fires only for configs where every group message actually drops.
+  const effectiveGroupAllowFrom = mergeIMessageGroupAllowFromWithLegacyChatTargets({
+    groupAllowFrom,
+    allowFrom,
+    allowLegacyConversationTargets: allowLegacyConversationAllowFromForGroup,
+  });
   warnGroupAllowlistMisconfigOnce({
     groupPolicy,
-    groups: imessageCfg.groups,
+    hasGroupAllowFrom: effectiveGroupAllowFrom.length > 0,
     accountId: accountInfo.accountId,
     log: (message) => runtime.log?.(warn(message)),
   });
@@ -483,9 +544,18 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
   const recoveryBoundaryRowid = watchSourceDbPath
     ? await resolveIMessageStartupRowidWatermark(watchSourceDbPath)
     : null;
-  const recoveryCursorRowid = loadIMessageRecoveryCursor(accountInfo.accountId, {
-    migrateLegacyCatchup: !catchupCfg.enabled,
+  // Scope the cursor to the resolved database so a dbPath/remoteHost change
+  // starts from the new DB's watermark instead of a stale high-water (#99638).
+  const recoveryCursorDbIdentity = resolveIMessageRecoveryCursorDbIdentity({
+    cliPath,
+    dbPath,
+    remoteHost,
   });
+  const recoveryCursorRowid = loadIMessageRecoveryCursor(
+    accountInfo.accountId,
+    recoveryCursorDbIdentity,
+    { migrateLegacyCatchup: !catchupCfg.enabled },
+  );
   const watchSinceRowid = catchupCfg.enabled
     ? null
     : recoveryCursorRowid !== null
@@ -596,7 +666,11 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
       holdFloor !== null && maxHandledRowid >= holdFloor ? holdFloor - 1 : maxHandledRowid;
 
     if (nextCursorRowid >= 0 && nextCursorRowid > latestAdvancedRecoveryCursorRowid) {
-      advanceIMessageRecoveryCursor(accountInfo.accountId, nextCursorRowid);
+      advanceIMessageRecoveryCursor(
+        accountInfo.accountId,
+        recoveryCursorDbIdentity,
+        nextCursorRowid,
+      );
       latestAdvancedRecoveryCursorRowid = nextCursorRowid;
       for (const rowid of handledRecoveryCursorRowids) {
         if (rowid <= nextCursorRowid) {
@@ -608,11 +682,9 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
 
   const { debouncer: inboundDebouncer } = createChannelInboundDebouncer<{
     message: IMessagePayload;
-    // Exact replay-guard key claimed for this row at ingestion (GUID or, for a
-    // GUID-less row, the composite fallback). Carried through so flush commits
-    // or releases the same key it claimed, even after a debounce merge rewrites
-    // the payload identity. null when the row had no derivable key (fail open).
-    replayKey: string | null;
+    // The ingestion claim owns the exact GUID/composite key even when debounce
+    // later rewrites the payload identity. Missing handles fail open.
+    replayClaim?: ChannelReplayClaimHandle;
   }>({
     cfg,
     channel: "imessage",
@@ -669,34 +741,30 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
       // dispatch throws so a transient failure can retry on a later re-emit. Per
       // unit so a failure in one bucket entry cannot strand another's claim.
       const dispatchUnit = async (
-        unitEntries: { message: IMessagePayload; replayKey: string | null }[],
+        unitEntries: { message: IMessagePayload; replayClaim?: ChannelReplayClaimHandle }[],
         message: IMessagePayload,
       ) => {
-        const keys = unitEntries
-          .map((entry) => entry.replayKey)
-          .filter((key): key is string => key !== null);
+        const replayClaims = unitEntries
+          .map((entry) => entry.replayClaim)
+          .filter((claim): claim is ChannelReplayClaimHandle => claim !== undefined);
         try {
           await handleMessageNow(message);
-          await commitIMessageInboundReplay({
-            guard: inboundReplayGuard,
-            accountId: accountInfo.accountId,
-            keys,
-          });
+          await Promise.all(replayClaims.map((claim) => claim.commit()));
           advanceRecoveryCursorAfterHandled(unitEntries);
         } catch (err) {
           holdRecoveryCursorBeforeFailedRows(unitEntries);
-          releaseIMessageInboundReplay({
-            guard: inboundReplayGuard,
-            accountId: accountInfo.accountId,
-            keys,
-            error: err,
-          });
+          for (const claim of replayClaims) {
+            claim.release({ error: err });
+          }
           runtime.error?.(`imessage: inbound dispatch failed: ${String(err)}`);
         }
       };
 
       if (entries.length === 1) {
-        await dispatchUnit(entries, entries[0].message);
+        await dispatchUnit(
+          entries,
+          expectDefined(entries[0], "single iMessage dispatch entry").message,
+        );
         return;
       }
 
@@ -711,7 +779,10 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
       // Standalone URL preview rows merge with the immediately preceding row;
       // already-complete URL messages flush any pending ordinary row first.
       if (messages.some(hasIMessageUrlBalloonBundleID)) {
-        let pending: { message: IMessagePayload; replayKey: string | null } | null = null;
+        let pending: {
+          message: IMessagePayload;
+          replayClaim?: ChannelReplayClaimHandle;
+        } | null = null;
         for (const entry of entries) {
           if (isStandaloneIMessageUrlPreviewPayload(entry.message) && pending) {
             const unitEntries = [pending, entry];
@@ -743,7 +814,7 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
       const combined = combineIMessagePayloads(messages);
       if (shouldLogVerbose()) {
         const text = combined.text ?? "";
-        const preview = text.slice(0, 50);
+        const preview = sliceUtf16Safe(text, 0, 50);
         const ellipsis = text.length > 50 ? "..." : "";
         logVerbose(
           `[imessage] merged ${entries.length} debounced messages: "${preview}${ellipsis}"`,
@@ -846,46 +917,27 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
     }
   }
 
+  // iMessage delivers a poll's comment as a separate inline reply to the poll
+  // balloon; fold it into the poll so the agent votes once instead of also
+  // replying to the caption in prose (a redundant restatement of the vote).
+  const pollCommentFolder = createPollCommentFolder();
+
   function resolveIMessageInboundBodyText(message: IMessagePayload) {
-    const messageText = (message.text ?? "").trim();
+    // Native poll balloons carry only a 0xFFFD placeholder in `text`; render the
+    // decoded poll (question/options/votes) so the agent sees the actual poll.
+    const pollBody = message.poll ? renderIMessagePollBody(message.poll) : null;
+    const messageText = (pollBody ?? message.text ?? "").trim();
     const attachments = includeAttachments ? (message.attachments ?? []) : [];
     const effectiveAttachmentRoots = remoteHost ? remoteAttachmentRoots : attachmentRoots;
-    const validAttachments = attachments.filter((entry) => {
-      if (isIMessagePluginPayloadAttachment(entry)) {
-        // Apple rich-link previews arrive as opaque .pluginPayloadAttachment
-        // files. The useful URL remains in message.text/attributedBody; treating
-        // the preview blob as media creates noisy phantom attachments and can
-        // keep split-send URL previews out of the text debounce path.
-        return false;
-      }
-      const attachmentPath = entry?.original_path?.trim();
-      if (!attachmentPath || entry?.missing) {
-        return false;
-      }
-      if (isInboundPathAllowed({ filePath: attachmentPath, roots: effectiveAttachmentRoots })) {
-        return true;
-      }
-      logVerbose(`imessage: dropping inbound attachment outside allowed roots: ${attachmentPath}`);
-      return false;
+    const mediaInput = resolveIMessageInboundMediaInput({
+      messageText,
+      attachments,
+      effectiveAttachmentRoots,
+      logVerbose,
     });
-    const rawMediaAttachments = validAttachments.flatMap((a) => {
-      const attachmentPath = a.original_path?.trim();
-      return attachmentPath
-        ? [{ path: attachmentPath, contentType: a.mime_type ?? undefined }]
-        : [];
-    });
-    const placeholderMediaType = rawMediaAttachments[0]?.contentType;
-    const kind = kindFromMime(placeholderMediaType ?? undefined);
-    const placeholder = kind
-      ? `<media:${kind}>`
-      : validAttachments.length
-        ? "<media:attachment>"
-        : "";
     return {
       messageText,
-      bodyText: messageText || placeholder,
-      validAttachments,
-      rawMediaAttachments,
+      ...mediaInput,
       effectiveAttachmentRoots,
     };
   }
@@ -896,10 +948,30 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
       return;
     }
 
+    // Remember native polls so a caption reply that lands WITH the poll is
+    // recognized and folded. The poll balloon (rendered with options + a vote
+    // cue) is still delivered; only the near-simultaneous comment is dropped so
+    // the agent votes without also answering it as a standalone question. A
+    // deliberate later inline reply to the poll falls outside the window and is
+    // delivered normally.
+    const pollFoldAtMs = message.created_at ? Date.parse(message.created_at) : Number.NaN;
+    if (message.poll) {
+      pollCommentFolder.rememberPoll(message.guid, pollFoldAtMs, message.sender);
+    } else if (
+      message.reply_to_guid != null &&
+      pollCommentFolder.isPollComment(message.reply_to_guid, pollFoldAtMs, message.sender)
+    ) {
+      logVerbose(
+        "imessage: folding poll comment (inline reply sent with a poll) into the poll; not delivering standalone",
+      );
+      return;
+    }
+
     const {
       messageText,
       bodyText,
-      validAttachments,
+      mediaPlaceholder,
+      mediaCandidates,
       rawMediaAttachments,
       effectiveAttachmentRoots,
     } = resolveIMessageInboundBodyText(message);
@@ -1012,6 +1084,7 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
       }
       await createChannelPairingChallengeIssuer({
         channel: "imessage",
+        accountId: accountInfo.accountId,
         upsertPairingRequest: async ({ id, meta }) =>
           await upsertChannelPairingRequest({
             channel: "imessage",
@@ -1136,20 +1209,36 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
           });
       };
     }
-    const stagedAttachments = remoteHost
-      ? []
-      : await stageIMessageAttachments(validAttachments, {
+    const staged = remoteHost
+      ? {
+          attachments: rawMediaAttachments,
+          unavailableCount: mediaCandidates.length - rawMediaAttachments.length,
+        }
+      : await stageIMessageAttachments(mediaCandidates, {
           maxBytes: mediaMaxBytes,
           allowedRoots: effectiveAttachmentRoots,
           deps: { logVerbose },
         });
-    const mediaAttachments = remoteHost ? rawMediaAttachments : stagedAttachments;
+    const mediaAttachments = staged.attachments;
     const firstAttachment = mediaAttachments[0];
     const mediaPath = firstAttachment?.path ?? undefined;
     const mediaType = firstAttachment?.contentType ?? undefined;
     // Build arrays for all attachments (for multi-image support)
     const mediaPaths = mediaAttachments.map((a) => a.path).filter(Boolean);
     const mediaTypes = mediaAttachments.map((a) => a.contentType ?? undefined);
+    const unavailableCount = staged.unavailableCount;
+    const contextDecision =
+      unavailableCount > 0
+        ? {
+            ...decision,
+            agentBodyText: formatIMessageInboundMediaBody({
+              messageText,
+              optimisticPlaceholder: mediaPlaceholder,
+              mediaAttachments,
+              unavailableCount,
+            }),
+          }
+        : decision;
     const previousTimestamp = readSessionUpdatedAt({
       storePath,
       sessionKey: decision.route.sessionKey,
@@ -1174,7 +1263,7 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
         : undefined;
     const { ctxPayload, chatTarget, imessageTo } = await buildIMessageInboundContext({
       cfg,
-      decision,
+      decision: contextDecision,
       message,
       previousTimestamp,
       remoteHost,
@@ -1363,12 +1452,14 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
           raw: decision,
         }),
         resolveTurn: () => ({
+          cfg,
           channel: "imessage",
           accountId: decision.route.accountId,
-          routeSessionKey: decision.route.sessionKey,
-          storePath,
+          route: {
+            agentId: decision.route.agentId,
+            sessionKey: decision.route.sessionKey,
+          },
           ctxPayload,
-          recordInboundSession,
           record: {
             updateLastRoute:
               !decision.isGroup && updateTarget
@@ -1489,8 +1580,7 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
         message,
       });
       if (suppressedKey) {
-        await commitIMessageInboundReplay({
-          guard: inboundReplayGuard,
+        await inboundReplayGuard.shouldProcess({
           accountId: accountInfo.accountId,
           keys: [suppressedKey],
         });
@@ -1508,19 +1598,21 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
     // transient dispatch failure (see handleMessageNow) so a failed message can
     // still retry on a later re-emit. Claimed only once we will actually enqueue
     // so a dropped row never leaks an uncommitted claim.
-    const replay = await claimIMessageInboundReplay({
-      guard: inboundReplayGuard,
+    const replay = await inboundReplayGuard.claim({
       accountId: accountInfo.accountId,
       message: repairedMessage,
     });
-    if (!replay.claimed) {
+    if (replay.kind === "duplicate" || replay.kind === "inflight") {
       logVerbose(
         `imessage: dropping duplicate inbound notification account=${accountInfo.accountId}`,
       );
       return;
     }
     trackPendingRecoveryReplayRow(repairedMessage);
-    await inboundDebouncer.enqueue({ message: repairedMessage, replayKey: replay.key });
+    await inboundDebouncer.enqueue({
+      message: repairedMessage,
+      ...(replay.kind === "claimed" ? { replayClaim: replay.handle } : {}),
+    });
   };
 
   await waitForTransportReady({
@@ -1778,3 +1870,4 @@ export async function monitorIMessageProvider(opts: MonitorIMessageOpts = {}): P
     await activeClient.stop();
   }
 }
+/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

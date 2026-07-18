@@ -650,6 +650,48 @@ export async function startGatewayServer(
   opts: GatewayServerOptions = {},
 ): Promise<GatewayServer> {
   normalizeStateDirEnv(process.env);
+  const [
+    {
+      OPENCLAW_DATABASE_SCHEMA_DOCS_URL,
+      OpenClawDatabaseSchemaPreflightError,
+      preflightOpenClawDatabaseSchemas,
+    },
+    agentDatabase,
+    stateDatabase,
+  ] = await Promise.all([
+    import("../state/openclaw-database-preflight.js"),
+    import("../state/openclaw-agent-db.js"),
+    import("../state/openclaw-state-db.js"),
+  ]);
+  const databaseSchemas = preflightOpenClawDatabaseSchemas({
+    env: process.env,
+    supportedVersions: {
+      state: stateDatabase.OPENCLAW_STATE_SCHEMA_VERSION,
+      agent: agentDatabase.OPENCLAW_AGENT_SCHEMA_VERSION,
+    },
+  });
+  if (databaseSchemas.incompatible.length > 0) {
+    for (const database of databaseSchemas.incompatible) {
+      log.error("database schema preflight rejected newer schema", {
+        kind: database.kind,
+        path: database.path,
+        ...(database.agentId ? { agentId: database.agentId } : {}),
+        foundVersion: database.foundVersion,
+        supportedVersion: database.supportedVersion,
+        writerAppVersion: database.writerAppVersion ?? "unknown",
+        docsUrl: OPENCLAW_DATABASE_SCHEMA_DOCS_URL,
+      });
+    }
+    throw new OpenClawDatabaseSchemaPreflightError(databaseSchemas.incompatible);
+  }
+  for (const database of databaseSchemas.indeterminate) {
+    log.warn("database schema preflight could not inspect database; continuing to real open", {
+      kind: database.kind,
+      path: database.path,
+      reason: database.reason,
+      docsUrl: OPENCLAW_DATABASE_SCHEMA_DOCS_URL,
+    });
+  }
   const { bootstrapGatewayNetworkRuntime } = await import("./server-network-runtime.js");
   bootstrapGatewayNetworkRuntime();
 
@@ -1228,6 +1270,8 @@ export async function startGatewayServer(
     chatAbortControllers,
     chatQueuedTurns,
     toolEventRecipients,
+    sessionEventSubscribers,
+    sessionMessageSubscribers,
     getWorkerIngressEndpoint,
     getMcpAppSandboxPort,
   } = await startupTrace.measure("runtime.state", () =>
@@ -1272,8 +1316,6 @@ export async function startGatewayServer(
   const {
     nodeRegistry,
     nodePresenceTimers,
-    sessionEventSubscribers,
-    sessionMessageSubscribers,
     nodeSendToSession,
     nodeSendToAllSubscribed,
     nodeSubscribe,
@@ -1283,6 +1325,8 @@ export async function startGatewayServer(
     hasTalkNodeConnected,
   } = createGatewayNodeSessionRuntime({
     broadcast,
+    sessionEventSubscribers,
+    sessionMessageSubscribers,
     listRegisteredNodePluginToolCommands: () => pluginRegistry.nodeHostCommands,
     nodePluginToolsEnabled: cfgAtStart.gateway?.nodes?.pluginTools?.enabled !== false,
     nodeSkillsEnabled: cfgAtStart.gateway?.nodes?.skills?.enabled !== false,
@@ -1976,6 +2020,7 @@ export async function startGatewayServer(
           chatQueuedTurns,
           chatAbortedRuns: chatRunState.abortedRuns,
           chatRunBuffers: chatRunState.buffers,
+          chatRunPlanSnapshots: chatRunState.planSnapshots,
           chatDeltaSentAt: chatRunState.deltaSentAt,
           chatDeltaLastBroadcastLen: chatRunState.deltaLastBroadcastLen,
           chatDeltaLastBroadcastText: chatRunState.deltaLastBroadcastText,
@@ -2347,6 +2392,13 @@ export async function startGatewayServer(
       log.info("gateway ready");
     }
     finishGatewayRestartTrace("restart.ready", collectGatewayProcessMemoryUsageMb());
+    if (!minimalTestGateway) {
+      const { startOpenClawDatabaseIntegrityVerifier } =
+        await import("../state/openclaw-database-verify.js");
+      runtimeState.gatewayLifetimeSidecars.push(
+        startOpenClawDatabaseIntegrityVerifier({ env: process.env }),
+      );
+    }
     postAttachRuntimeReturned = true;
     activateScheduledServicesWhenReady();
 

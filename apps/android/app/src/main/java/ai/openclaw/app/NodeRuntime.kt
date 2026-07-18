@@ -11,6 +11,7 @@ import ai.openclaw.app.chat.ChatMessage
 import ai.openclaw.app.chat.ChatOutboxItem
 import ai.openclaw.app.chat.ChatPendingToolCall
 import ai.openclaw.app.chat.ChatPlanStep
+import ai.openclaw.app.chat.ChatQuestionPrompt
 import ai.openclaw.app.chat.ChatSessionDeletion
 import ai.openclaw.app.chat.ChatSessionEntry
 import ai.openclaw.app.chat.ChatThinkingLevelSelection
@@ -101,10 +102,14 @@ import ai.openclaw.app.voice.VoiceWakeManager
 import ai.openclaw.app.voice.VoiceWakeMatch
 import ai.openclaw.app.voice.VoiceWakePreferences
 import ai.openclaw.app.voice.VoiceWakeSuppressionReason
+import ai.openclaw.app.wear.WearProxyAgent
 import ai.openclaw.app.wear.WearProxyBridge
 import ai.openclaw.app.wear.WearProxyController
 import ai.openclaw.app.wear.WearProxyGatewayException
+import ai.openclaw.app.wear.WearRealtimeTalkController
 import ai.openclaw.wear.shared.WearMessage
+import ai.openclaw.wear.shared.WearRealtimeTalkCodec
+import ai.openclaw.wear.shared.WearRealtimeTalkSnapshot
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
@@ -1101,6 +1106,7 @@ class NodeRuntime private constructor(
         }
       },
       onDisconnected = { message ->
+        if (wearRealtimeTalkControllerLazy.isInitialized()) wearRealtimeTalkController.abort()
         clearOperatorGatewayState(retirePendingCronRuns = false)
         chat.applyMainSessionKey(resolveMainSessionKey())
         chat.onDisconnected(message)
@@ -1113,6 +1119,7 @@ class NodeRuntime private constructor(
         wearProxyBridge()?.publishConnection(connected = false, status = message)
       },
       onConnectFailure = { error, pauseReconnect ->
+        if (wearRealtimeTalkControllerLazy.isInitialized()) wearRealtimeTalkController.abort()
         val problem = gatewayConnectionProblem(error, pauseReconnect)
         updateStatus {
           operatorConnected = false
@@ -1133,10 +1140,43 @@ class NodeRuntime private constructor(
       requestGateway = ::requestWearGateway,
       isGatewayConnected = operatorSession::isReady,
       gatewayStatusText = { synchronized(gatewayStatusLock) { operatorStatusText } },
+      activeAgentId = {
+        resolveAgentIdFromMainSessionKey(mainSessionKey.value) ?: gatewayDefaultAgentId.value
+      },
+      activeSessionKey = { chatSessionKey.value },
+      selectedModelRef = { chatSelectedModelRef.value },
+      agents = {
+        gatewayAgents.value.map { agent ->
+          WearProxyAgent(
+            id = agent.id,
+            name = agent.name,
+            emoji = agent.emoji,
+          )
+        }
+      },
+      selectGatewayAgent = { agentId ->
+        if (gatewayAgents.value.none { agent -> agent.id == agentId }) {
+          false
+        } else {
+          selectChatAgent(agentId)
+          true
+        }
+      },
+      connectGateway = { refreshGatewayConnection() },
+      disconnectGateway = { disconnect() },
+      startRealtimeTalk = { nodeId, sessionKey, attemptId, language ->
+        if (startWearRealtimeTalk(nodeId, sessionKey, attemptId, language)) wearRealtimeTalkSnapshot.value else null
+      },
+      stopRealtimeTalk = { nodeId, attemptId ->
+        if (stopWearRealtimeTalk(nodeId, attemptId)) wearRealtimeTalkSnapshot.value else null
+      },
     )
   }
 
-  internal suspend fun handleWearProxyRequest(request: WearMessage.Request): WearMessage.Response = wearProxyController.handle(request)
+  internal suspend fun handleWearProxyRequest(
+    sourceNodeId: String,
+    request: WearMessage.Request,
+  ): WearMessage.Response = wearProxyController.handle(request, sourceNodeId)
 
   private suspend fun requestWearGateway(
     method: String,
@@ -1624,6 +1664,69 @@ class NodeRuntime private constructor(
 
   val talkModeConversation: StateFlow<List<VoiceConversationEntry>>
     get() = talkMode.conversation
+
+  private val wearRealtimeTalkControllerLazy: Lazy<WearRealtimeTalkController> =
+    lazy {
+      WearRealtimeTalkController(
+        scope = scope,
+        isConnected = { gatewayConnectionDisplay.value.isConnected },
+        requestGateway = { method, paramsJson, timeoutMs ->
+          val gatewayId = connectedEndpoint?.stableId ?: error("Gateway not connected")
+          operatorSession.requestForEndpoint(gatewayId, method, paramsJson, timeoutMs)
+        },
+        sendGatewayFrame = { method, paramsJson, timeoutMs, onError ->
+          val gatewayId = connectedEndpoint?.stableId ?: error("Gateway not connected")
+          operatorSession.sendRequestFrameForEndpoint(gatewayId, method, paramsJson, timeoutMs) { error ->
+            onError(error.message)
+          }
+        },
+        sendWatchFrame = { nodeId, type, payload ->
+          val app = appContext as? NodeApp ?: error("Wear channel owner is unavailable")
+          app.wearRealtimeChannels.send(nodeId, type, payload)
+        },
+        onSnapshot = { snapshot ->
+          wearProxyBridge()?.publishTalk(WearRealtimeTalkCodec.encode(snapshot))
+        },
+        onForceCloseWatchChannel = { nodeId ->
+          scope.launch { (appContext as? NodeApp)?.wearRealtimeChannels?.close(nodeId) }
+        },
+      )
+    }
+
+  private val wearRealtimeTalkController: WearRealtimeTalkController
+    get() = wearRealtimeTalkControllerLazy.value
+
+  internal val wearRealtimeTalkSnapshot: StateFlow<WearRealtimeTalkSnapshot>
+    get() = wearRealtimeTalkController.snapshot
+
+  internal suspend fun startWearRealtimeTalk(
+    nodeId: String,
+    sessionKey: String,
+    attemptId: String,
+    language: String?,
+  ): Boolean {
+    if (talkModeEnabled.value || micEnabled.value || micCooldown.value) return false
+    val resolvedLanguage = talkMode.resolveRealtimeLanguageHint(language)
+    return wearRealtimeTalkController.start(nodeId, sessionKey, attemptId, resolvedLanguage)
+  }
+
+  internal suspend fun stopWearRealtimeTalk(
+    nodeId: String? = null,
+    attemptId: String? = null,
+  ): Boolean {
+    // The watch closes its channel after receiving the stop response. Closing
+    // here races the response and makes a normal stop look like link failure.
+    return wearRealtimeTalkController.stop(nodeId, attemptId)
+  }
+
+  internal fun appendWearRealtimeAudio(
+    nodeId: String,
+    payload: ByteArray,
+  ) {
+    if (wearRealtimeTalkControllerLazy.isInitialized()) {
+      wearRealtimeTalkController.appendAudio(nodeId, payload)
+    }
+  }
 
   private fun syncMainSessionKey(agentId: String?) {
     val resolvedKey = resolveNodeMainSessionKey(agentId)
@@ -2310,6 +2413,7 @@ class NodeRuntime private constructor(
   val chatModelCatalog: StateFlow<List<GatewayModelSummary>> = chat.modelCatalog
   val chatStreamingAssistantText: StateFlow<String?> = chat.streamingAssistantText
   val chatPendingToolCalls: StateFlow<List<ChatPendingToolCall>> = chat.pendingToolCalls
+  val chatQuestions: StateFlow<List<ChatQuestionPrompt>> = chat.questions
   val chatPlanSteps: StateFlow<List<ChatPlanStep>> = chat.planSteps
   val chatSessions: StateFlow<List<ChatSessionEntry>> = chat.sessions
   val pendingRunCount: StateFlow<Int> = chat.pendingRunCount
@@ -2323,6 +2427,11 @@ class NodeRuntime private constructor(
   fun retryChatOutboxCommand(id: String) = chat.retryOutboxCommand(id)
 
   fun deleteChatOutboxCommand(id: String) = chat.deleteOutboxCommand(id)
+
+  fun resolveChatQuestion(
+    id: String,
+    answers: Map<String, List<String>>,
+  ) = chat.resolveQuestion(id, answers)
 
   private fun applyScreenshotFixture() {
     check(BuildConfig.DEBUG) { "Android screenshot fixtures require a debug build" }
@@ -3914,6 +4023,7 @@ class NodeRuntime private constructor(
   }
 
   private fun disconnect(retireRunState: Boolean) {
+    if (wearRealtimeTalkControllerLazy.isInitialized()) wearRealtimeTalkController.abort()
     prepareDisconnect(retireRunState)
     operatorSession.disconnect()
     nodeSession.disconnect()
@@ -4367,6 +4477,9 @@ class NodeRuntime private constructor(
     handleExecApprovalGatewayEvent(event = event, payloadJson = payloadJson)
     micCapture.handleGatewayEvent(event, payloadJson)
     talkMode.handleGatewayEvent(event, payloadJson)
+    if (wearRealtimeTalkControllerLazy.isInitialized()) {
+      wearRealtimeTalkController.handleGatewayEvent(event, payloadJson)
+    }
     chat.handleGatewayEvent(event, payloadJson)
     if (event == "chat" && !payloadJson.isNullOrBlank()) {
       runCatching { json.parseToJsonElement(payloadJson) }

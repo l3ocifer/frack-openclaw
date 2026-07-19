@@ -31,11 +31,11 @@ tauri-plugin-window-state = "2.4.1"
 [target.'cfg(target_os = "linux")'.dependencies]
 cairo-rs = { version = "0.18.5", features = ["png"] }
 libc = "0.2.186"
-tauri-plugin-notifications = { git = "https://github.com/steipete/tauri-plugin-notifications.git", rev = "d20b4ff0e0e327e49fee80903478f825eac5a71a" }
+tauri-plugin-notifications = { git = "https://github.com/steipete/tauri-plugin-notifications.git", rev = "2a00e01f027436e6c8825ae7b768d0aa0addce2e" }
 webkit2gtk = "2.0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-tauri-plugin-notifications = { git = "https://github.com/steipete/tauri-plugin-notifications.git", rev = "d20b4ff0e0e327e49fee80903478f825eac5a71a", default-features = false }
+tauri-plugin-notifications = { git = "https://github.com/steipete/tauri-plugin-notifications.git", rev = "2a00e01f027436e6c8825ae7b768d0aa0addce2e", default-features = false }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-tauri-plugin-notifications = { git = "https://github.com/steipete/tauri-plugin-notifications.git", rev = "d20b4ff0e0e327e49fee80903478f825eac5a71a" }
+tauri-plugin-notifications = { git = "https://github.com/steipete/tauri-plugin-notifications.git", rev = "2a00e01f027436e6c8825ae7b768d0aa0addce2e" }

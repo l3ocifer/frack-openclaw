@@ -163,7 +163,7 @@ jobs:
     name: Build unsigned macOS test bundles
     if: ${{ inputs['desktop-test-bundles'] }}
     needs: validate_release
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 45
     steps:
       - name: Checkout selected tag

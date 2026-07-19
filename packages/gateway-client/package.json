@@ -37,6 +37,6 @@
     "@openclaw/gateway-protocol": "workspace:*",
     "@openclaw/net-policy": "workspace:*",
     "@openclaw/retry": "workspace:*",
-    "ws": "8.21.0"
+    "ws": "8.21.1"
   }
 }

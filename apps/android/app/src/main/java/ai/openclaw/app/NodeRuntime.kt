@@ -11,6 +11,7 @@ import ai.openclaw.app.chat.ChatMessage
 import ai.openclaw.app.chat.ChatOutboxItem
 import ai.openclaw.app.chat.ChatPendingToolCall
 import ai.openclaw.app.chat.ChatPlanStep
+import ai.openclaw.app.chat.ChatQuestionPrompt
 import ai.openclaw.app.chat.ChatSessionDeletion
 import ai.openclaw.app.chat.ChatSessionEntry
 import ai.openclaw.app.chat.ChatThinkingLevelSelection
@@ -44,12 +45,15 @@ import ai.openclaw.app.gateway.GatewayRequestRejected
 import ai.openclaw.app.gateway.GatewaySession
 import ai.openclaw.app.gateway.GatewayTlsProbeFailure
 import ai.openclaw.app.gateway.GatewayTlsProbeResult
+import ai.openclaw.app.gateway.GatewayTlsTrustDecision
 import ai.openclaw.app.gateway.GatewayUpdateAvailableSummary
 import ai.openclaw.app.gateway.NetworkMonitor
 import ai.openclaw.app.gateway.NodeEventSendOutcome
+import ai.openclaw.app.gateway.decideGatewayTlsTrust
 import ai.openclaw.app.gateway.formatGatewayAuthority
+import ai.openclaw.app.gateway.isGatewayTlsSystemTrustCandidate
 import ai.openclaw.app.gateway.normalizeGatewayApprovalRequestId
-import ai.openclaw.app.gateway.normalizeGatewayTlsFingerprint
+import ai.openclaw.app.gateway.normalizeGatewayTlsFingerprintInput
 import ai.openclaw.app.gateway.parseChatSendAck
 import ai.openclaw.app.gateway.probeGatewayTlsFingerprint
 import ai.openclaw.app.i18n.NativeText
@@ -101,10 +105,15 @@ import ai.openclaw.app.voice.VoiceWakeManager
 import ai.openclaw.app.voice.VoiceWakeMatch
 import ai.openclaw.app.voice.VoiceWakePreferences
 import ai.openclaw.app.voice.VoiceWakeSuppressionReason
+import ai.openclaw.app.wear.WearProxyAgent
 import ai.openclaw.app.wear.WearProxyBridge
 import ai.openclaw.app.wear.WearProxyController
 import ai.openclaw.app.wear.WearProxyGatewayException
+import ai.openclaw.app.wear.WearProxyModel
+import ai.openclaw.app.wear.WearRealtimeTalkController
 import ai.openclaw.wear.shared.WearMessage
+import ai.openclaw.wear.shared.WearRealtimeTalkCodec
+import ai.openclaw.wear.shared.WearRealtimeTalkSnapshot
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
@@ -588,7 +597,7 @@ class NodeRuntime private constructor(
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
   private val deviceAuthStore = DeviceAuthStore(prefs)
   val canvas = CanvasController()
-  val camera = CameraCaptureManager(appContext)
+  val camera = CameraCaptureManager(appContext) { prefs.preferredCameraFacing.value }
   val location = LocationCaptureManager(appContext)
   val sms = SmsManager(appContext)
   private val json = Json { ignoreUnknownKeys = true }
@@ -623,12 +632,14 @@ class NodeRuntime private constructor(
   private val externalAudioCaptureActive = MutableStateFlow(false)
   private val _voiceCaptureMode = MutableStateFlow(VoiceCaptureMode.Off)
   val voiceCaptureMode: StateFlow<VoiceCaptureMode> = _voiceCaptureMode.asStateFlow()
+  private val _activeAudioInputDevicePreference = MutableStateFlow<String?>(null)
+  val activeAudioInputDevicePreference: StateFlow<String?> = _activeAudioInputDevicePreference.asStateFlow()
 
   private val discovery = GatewayDiscovery(appContext, scope = scope)
   val gateways: StateFlow<List<GatewayEndpoint>> = discovery.gateways
   val discoveryStatusText: StateFlow<String> = discovery.statusText
 
-  private val identityStore = DeviceIdentityStore(appContext)
+  private val identityStore = DeviceIdentityStore.withPrefs(appContext, prefs)
   private var connectedEndpoint: GatewayEndpoint? = null
   private var activeGatewayAuth: GatewayConnectAuth? = null
 
@@ -790,9 +801,11 @@ class NodeRuntime private constructor(
    */
   data class GatewayTrustPrompt(
     val endpoint: GatewayEndpoint,
-    val fingerprintSha256: String,
+    val fingerprintSha256: String?,
     val auth: GatewayConnectAuth,
     val previousFingerprintSha256: String? = null,
+    val probeFailure: GatewayTlsProbeFailure? = null,
+    val systemTrustAvailable: Boolean = false,
   )
 
   data class VoiceE2eSliceResult(
@@ -1048,6 +1061,7 @@ class NodeRuntime private constructor(
   private val voiceCaptureOwnershipLock = Any()
   private var voiceWakeSuppressionRevision = 0L
   private var voiceNoteOwnsMic = false
+  private var dictationOwnsMic = false
   private var cameraAudioOwnsMic = false
   private val voiceReplySpeechDepth = AtomicInteger(0)
   private val voiceCapturePreparationMutex = Mutex()
@@ -1101,6 +1115,7 @@ class NodeRuntime private constructor(
         }
       },
       onDisconnected = { message ->
+        if (wearRealtimeTalkControllerLazy.isInitialized()) wearRealtimeTalkController.abort()
         clearOperatorGatewayState(retirePendingCronRuns = false)
         chat.applyMainSessionKey(resolveMainSessionKey())
         chat.onDisconnected(message)
@@ -1113,6 +1128,7 @@ class NodeRuntime private constructor(
         wearProxyBridge()?.publishConnection(connected = false, status = message)
       },
       onConnectFailure = { error, pauseReconnect ->
+        if (wearRealtimeTalkControllerLazy.isInitialized()) wearRealtimeTalkController.abort()
         val problem = gatewayConnectionProblem(error, pauseReconnect)
         updateStatus {
           operatorConnected = false
@@ -1133,10 +1149,61 @@ class NodeRuntime private constructor(
       requestGateway = ::requestWearGateway,
       isGatewayConnected = operatorSession::isReady,
       gatewayStatusText = { synchronized(gatewayStatusLock) { operatorStatusText } },
+      activeAgentId = {
+        resolveAgentIdFromMainSessionKey(mainSessionKey.value) ?: gatewayDefaultAgentId.value
+      },
+      activeSessionKey = { chatSessionKey.value },
+      selectedModelRef = { chatSelectedModelRef.value },
+      agents = {
+        gatewayAgents.value.map { agent ->
+          WearProxyAgent(
+            id = agent.id,
+            name = agent.name,
+            emoji = agent.emoji,
+          )
+        }
+      },
+      selectGatewayAgent = { agentId ->
+        if (gatewayAgents.value.none { agent -> agent.id == agentId }) {
+          false
+        } else {
+          selectChatAgent(agentId)
+          true
+        }
+      },
+      models = {
+        chatModelCatalog.value
+          .asSequence()
+          .filter { model -> model.available != false }
+          .map { model ->
+            val provider = model.provider.trim()
+            val ref =
+              if (provider.isEmpty() || model.id.startsWith("$provider/")) {
+                model.id
+              } else {
+                "$provider/${model.id}"
+              }
+            WearProxyModel(ref = ref, name = model.name)
+          }.toList()
+      },
+      selectSessionModel = { sessionKey, modelRef ->
+        chat.setSessionModelAwait(sessionKey = sessionKey, modelRef = modelRef)
+      },
+      connectGateway = { refreshGatewayConnection() },
+      disconnectGateway = { disconnect() },
+      startRealtimeTalk = { nodeId, sessionKey, attemptId, language ->
+        if (startWearRealtimeTalk(nodeId, sessionKey, attemptId, language)) wearRealtimeTalkSnapshot.value else null
+      },
+      stopRealtimeTalk = { nodeId, attemptId ->
+        if (stopWearRealtimeTalk(nodeId, attemptId)) wearRealtimeTalkSnapshot.value else null
+      },
     )
   }
 
-  internal suspend fun handleWearProxyRequest(request: WearMessage.Request): WearMessage.Response = wearProxyController.handle(request)
+  internal suspend fun handleWearProxyRequest(
+    sourceNodeId: String,
+    request: WearMessage.Request,
+  ): WearMessage.Response = wearProxyController.handle(request, sourceNodeId)
 
   private suspend fun requestWearGateway(
     method: String,
@@ -1485,6 +1552,12 @@ class NodeRuntime private constructor(
     MicCaptureManager(
       context = appContext,
       scope = scope,
+      preferredAudioInputDevice = { prefs.preferredAudioInputDevice.value },
+      onAppliedAudioInputChanged = { key ->
+        if (_voiceCaptureMode.value == VoiceCaptureMode.ManualMic) {
+          _activeAudioInputDevicePreference.value = key
+        }
+      },
       createTranscriptionSession = {
         val gatewayId = connectedEndpoint?.stableId ?: error("not connected")
         val params =
@@ -1592,6 +1665,12 @@ class NodeRuntime private constructor(
       session = operatorSession,
       isConnected = { gatewayConnectionDisplay.value.isConnected },
       gatewayStableId = { connectedEndpoint?.stableId },
+      preferredAudioInputDevice = { prefs.preferredAudioInputDevice.value },
+      onAppliedAudioInputChanged = { key ->
+        if (_voiceCaptureMode.value == VoiceCaptureMode.TalkMode) {
+          _activeAudioInputDevicePreference.value = key
+        }
+      },
       onBeforeSpeak = { micCapture.pauseForTts() },
       onAfterSpeak = { micCapture.resumeAfterTts() },
       onStoppedByRelay = { finishTalkModeAfterRelayClose() },
@@ -1624,6 +1703,69 @@ class NodeRuntime private constructor(
 
   val talkModeConversation: StateFlow<List<VoiceConversationEntry>>
     get() = talkMode.conversation
+
+  private val wearRealtimeTalkControllerLazy: Lazy<WearRealtimeTalkController> =
+    lazy {
+      WearRealtimeTalkController(
+        scope = scope,
+        isConnected = { gatewayConnectionDisplay.value.isConnected },
+        requestGateway = { method, paramsJson, timeoutMs ->
+          val gatewayId = connectedEndpoint?.stableId ?: error("Gateway not connected")
+          operatorSession.requestForEndpoint(gatewayId, method, paramsJson, timeoutMs)
+        },
+        sendGatewayFrame = { method, paramsJson, timeoutMs, onError ->
+          val gatewayId = connectedEndpoint?.stableId ?: error("Gateway not connected")
+          operatorSession.sendRequestFrameForEndpoint(gatewayId, method, paramsJson, timeoutMs) { error ->
+            onError(error.message)
+          }
+        },
+        sendWatchFrame = { nodeId, type, payload ->
+          val app = appContext as? NodeApp ?: error("Wear channel owner is unavailable")
+          app.wearRealtimeChannels.send(nodeId, type, payload)
+        },
+        onSnapshot = { snapshot ->
+          wearProxyBridge()?.publishTalk(WearRealtimeTalkCodec.encode(snapshot))
+        },
+        onForceCloseWatchChannel = { nodeId ->
+          scope.launch { (appContext as? NodeApp)?.wearRealtimeChannels?.close(nodeId) }
+        },
+      )
+    }
+
+  private val wearRealtimeTalkController: WearRealtimeTalkController
+    get() = wearRealtimeTalkControllerLazy.value
+
+  internal val wearRealtimeTalkSnapshot: StateFlow<WearRealtimeTalkSnapshot>
+    get() = wearRealtimeTalkController.snapshot
+
+  internal suspend fun startWearRealtimeTalk(
+    nodeId: String,
+    sessionKey: String,
+    attemptId: String,
+    language: String?,
+  ): Boolean {
+    if (talkModeEnabled.value || micEnabled.value || micCooldown.value) return false
+    val resolvedLanguage = talkMode.resolveRealtimeLanguageHint(language)
+    return wearRealtimeTalkController.start(nodeId, sessionKey, attemptId, resolvedLanguage)
+  }
+
+  internal suspend fun stopWearRealtimeTalk(
+    nodeId: String? = null,
+    attemptId: String? = null,
+  ): Boolean {
+    // The watch closes its channel after receiving the stop response. Closing
+    // here races the response and makes a normal stop look like link failure.
+    return wearRealtimeTalkController.stop(nodeId, attemptId)
+  }
+
+  internal fun appendWearRealtimeAudio(
+    nodeId: String,
+    payload: ByteArray,
+  ) {
+    if (wearRealtimeTalkControllerLazy.isInitialized()) {
+      wearRealtimeTalkController.appendAudio(nodeId, payload)
+    }
+  }
 
   private fun syncMainSessionKey(agentId: String?) {
     val resolvedKey = resolveNodeMainSessionKey(agentId)
@@ -2310,6 +2452,7 @@ class NodeRuntime private constructor(
   val chatModelCatalog: StateFlow<List<GatewayModelSummary>> = chat.modelCatalog
   val chatStreamingAssistantText: StateFlow<String?> = chat.streamingAssistantText
   val chatPendingToolCalls: StateFlow<List<ChatPendingToolCall>> = chat.pendingToolCalls
+  val chatQuestions: StateFlow<List<ChatQuestionPrompt>> = chat.questions
   val chatPlanSteps: StateFlow<List<ChatPlanStep>> = chat.planSteps
   val chatSessions: StateFlow<List<ChatSessionEntry>> = chat.sessions
   val pendingRunCount: StateFlow<Int> = chat.pendingRunCount
@@ -2323,6 +2466,13 @@ class NodeRuntime private constructor(
   fun retryChatOutboxCommand(id: String) = chat.retryOutboxCommand(id)
 
   fun deleteChatOutboxCommand(id: String) = chat.deleteOutboxCommand(id)
+
+  fun resolveChatQuestion(
+    id: String,
+    answers: Map<String, List<String>>,
+  ) = chat.resolveQuestion(id, answers)
+
+  fun skipChatQuestion(id: String) = chat.skipQuestion(id)
 
   private fun applyScreenshotFixture() {
     check(BuildConfig.DEBUG) { "Android screenshot fixtures require a debug build" }
@@ -2453,6 +2603,14 @@ class NodeRuntime private constructor(
     scope.launch {
       nativeLocaleChanges.drop(1).collect {
         updateHomeCanvasState()
+      }
+    }
+
+    scope.launch {
+      chatModelCatalog.drop(1).distinctUntilChanged().collect {
+        // Chat metadata arrives after the connection event. Invalidate the Watch snapshot so
+        // its Home model picker cannot stay empty until the user refreshes manually.
+        if (operatorSession.isReady()) wearProxyBridge()?.publishResync()
       }
     }
 
@@ -2776,7 +2934,7 @@ class NodeRuntime private constructor(
   internal fun tryAcquireVoiceNoteMic(): Boolean {
     val suppressionUpdate =
       synchronized(voiceCaptureOwnershipLock) {
-        if (voiceNoteOwnsMic || !isVoiceCaptureModeActive(VoiceCaptureMode.Off)) return false
+        if (voiceNoteOwnsMic || dictationOwnsMic || !isVoiceCaptureModeActive(VoiceCaptureMode.Off)) return false
         voiceNoteOwnsMic = true
         createVoiceWakeSuppressionUpdateLocked(VoiceWakeSuppressionReason.VoiceNote, true)
       }
@@ -2789,6 +2947,33 @@ class NodeRuntime private constructor(
       synchronized(voiceCaptureOwnershipLock) {
         voiceNoteOwnsMic = false
         createVoiceWakeSuppressionUpdateLocked(VoiceWakeSuppressionReason.VoiceNote, false)
+      }
+    applyVoiceWakeSuppression(suppressionUpdate)
+  }
+
+  internal fun tryAcquireDictationMic(): Boolean {
+    val suppressionUpdate =
+      synchronized(voiceCaptureOwnershipLock) {
+        if (
+          dictationOwnsMic ||
+          voiceNoteOwnsMic ||
+          cameraAudioOwnsMic ||
+          !isVoiceCaptureModeActive(VoiceCaptureMode.Off)
+        ) {
+          return false
+        }
+        dictationOwnsMic = true
+        createVoiceWakeSuppressionUpdateLocked(VoiceWakeSuppressionReason.Dictation, true)
+      }
+    applyVoiceWakeSuppression(suppressionUpdate)
+    return true
+  }
+
+  internal fun releaseDictationMic() {
+    val suppressionUpdate =
+      synchronized(voiceCaptureOwnershipLock) {
+        dictationOwnsMic = false
+        createVoiceWakeSuppressionUpdateLocked(VoiceWakeSuppressionReason.Dictation, false)
       }
     applyVoiceWakeSuppression(suppressionUpdate)
   }
@@ -2955,6 +3140,9 @@ class NodeRuntime private constructor(
           if (voiceNoteOwnsMic) {
             throw IllegalStateException("MIC_BUSY: voice note recording is active")
           }
+          if (dictationOwnsMic) {
+            throw IllegalStateException("MIC_BUSY: dictation is active")
+          }
           if (cameraAudioOwnsMic) {
             throw IllegalStateException("MIC_BUSY: camera audio recording is active")
           }
@@ -3070,6 +3258,12 @@ class NodeRuntime private constructor(
   val speakerEnabled: StateFlow<Boolean>
     get() = prefs.speakerEnabled
 
+  val preferredCameraFacing: StateFlow<String>
+    get() = prefs.preferredCameraFacing
+
+  val preferredAudioInputDevice: StateFlow<String?>
+    get() = prefs.preferredAudioInputDevice
+
   fun setSpeakerEnabled(value: Boolean) {
     prefs.setSpeakerEnabled(value)
     if (voiceReplySpeakerLazy.isInitialized()) {
@@ -3077,6 +3271,14 @@ class NodeRuntime private constructor(
     }
     // Keep TalkMode in sync so any active Talk playback also respects speaker mute.
     talkMode.setPlaybackEnabled(value)
+  }
+
+  fun setPreferredCameraFacing(value: String) {
+    prefs.setPreferredCameraFacing(value)
+  }
+
+  fun setPreferredAudioInputDevice(value: String?) {
+    prefs.setPreferredAudioInputDevice(value)
   }
 
   fun setVoiceWakeEnabled(value: Boolean) {
@@ -3283,7 +3485,7 @@ class NodeRuntime private constructor(
     var startAfterSuppression: VoiceCaptureMode? = null
     val suppressionUpdate =
       synchronized(voiceCaptureOwnershipLock) {
-        if (mode != VoiceCaptureMode.Off && voiceNoteOwnsMic) return
+        if (mode != VoiceCaptureMode.Off && (voiceNoteOwnsMic || dictationOwnsMic)) return
         if (mode != VoiceCaptureMode.Off && cameraAudioOwnsMic) return
         talkPttCommandEpoch.incrementAndGet()
         voiceCaptureOwnershipEpoch.incrementAndGet()
@@ -3293,6 +3495,7 @@ class NodeRuntime private constructor(
         if (_voiceCaptureMode.value == captureMode && isVoiceCaptureModeActive(captureMode)) return
         talkPttOwnership.set(null)
         _voiceCaptureMode.value = captureMode
+        _activeAudioInputDevicePreference.value = null
         when (captureMode) {
           VoiceCaptureMode.Off -> {
             talkMode.ttsOnAllResponses = false
@@ -3387,7 +3590,12 @@ class NodeRuntime private constructor(
     val suppressionUpdate =
       synchronized(voiceCaptureOwnershipLock) {
         if (active) {
-          if (cameraAudioOwnsMic || voiceNoteOwnsMic || !isVoiceCaptureModeActive(VoiceCaptureMode.Off)) {
+          if (
+            cameraAudioOwnsMic ||
+            voiceNoteOwnsMic ||
+            dictationOwnsMic ||
+            !isVoiceCaptureModeActive(VoiceCaptureMode.Off)
+          ) {
             return false
           }
           cameraAudioOwnsMic = true
@@ -3641,43 +3849,47 @@ class NodeRuntime private constructor(
     _pendingGatewayTrust.value = null
     val tls = connectionManager.resolveTlsParams(endpoint)
     if (tls?.required == true) {
-      val expectedFingerprint =
-        tls.expectedFingerprint
-          ?.let(::normalizeGatewayTlsFingerprint)
-          ?.takeIf { it.isNotBlank() }
+      val storedFingerprint = tls.expectedFingerprint
       setStandaloneGatewayStatus("Verify gateway TLS fingerprint…")
       scope.launch {
         val tlsProbe = tlsFingerprintProbe(endpoint.host, endpoint.port)
         if (!isCurrentConnectAttempt(connectAttemptId)) return@launch
-        val fp =
-          tlsProbe.fingerprintSha256 ?: run {
-            if (expectedFingerprint == null) {
-              connectingEndpointStableId = null
-              setStandaloneGatewayStatus(gatewayTlsProbeFailureMessage(tlsProbe.failure))
-            } else {
-              connectAfterTlsCheck(endpoint = endpoint, auth = auth, connectAttemptId = connectAttemptId)
-            }
-            return@launch
+        when (
+          val decision =
+            decideGatewayTlsTrust(
+              storedFingerprint = storedFingerprint,
+              systemTrustCandidate = isGatewayTlsSystemTrustCandidate(endpoint.host),
+              probeResult = tlsProbe,
+            )
+        ) {
+          GatewayTlsTrustDecision.SystemTrusted -> {
+            // Automatic platform trust only applies where no user-accepted pin exists.
+            // Replacing a pin always requires explicit confirmation in the trust prompt.
+            registerGateway(endpoint, setActive = true)
+            connectAfterTlsCheck(endpoint = endpoint, auth = auth, connectAttemptId = connectAttemptId)
           }
-        val observedFingerprint =
-          normalizeGatewayTlsFingerprint(fp)
-            .takeIf { it.isNotBlank() }
-            ?: fp
-        val previousFingerprint = expectedFingerprint?.takeUnless { it == observedFingerprint }
-        if (expectedFingerprint == null || previousFingerprint != null) {
-          publishGatewayTrustPromptIfCurrent(
-            connectAttemptId = connectAttemptId,
-            prompt =
-              GatewayTrustPrompt(
-                endpoint = endpoint,
-                fingerprintSha256 = observedFingerprint,
-                auth = auth,
-                previousFingerprintSha256 = previousFingerprint,
-              ),
-          )
-          return@launch
+          is GatewayTlsTrustDecision.PinnedTrust ->
+            connectAfterTlsCheck(endpoint = endpoint, auth = auth, connectAttemptId = connectAttemptId)
+          is GatewayTlsTrustDecision.PromptRequired -> {
+            decision.probeFailure?.let { setStandaloneGatewayStatus(gatewayTlsProbeFailureMessage(it)) }
+            publishGatewayTrustPromptIfCurrent(
+              connectAttemptId = connectAttemptId,
+              prompt =
+                GatewayTrustPrompt(
+                  endpoint = endpoint,
+                  fingerprintSha256 = decision.fingerprintSha256,
+                  auth = auth,
+                  previousFingerprintSha256 = decision.previousFingerprintSha256,
+                  probeFailure = decision.probeFailure,
+                  systemTrustAvailable = decision.systemTrustAvailable,
+                ),
+            )
+          }
+          is GatewayTlsTrustDecision.Failed -> {
+            connectingEndpointStableId = null
+            setStandaloneGatewayStatus(gatewayTlsProbeFailureMessage(decision.reason))
+          }
         }
-        connectAfterTlsCheck(endpoint = endpoint, auth = auth, connectAttemptId = connectAttemptId)
       }
       return
     }
@@ -3801,13 +4013,30 @@ class NodeRuntime private constructor(
         )
       }
 
-  fun acceptGatewayTrustPrompt() {
+  fun acceptGatewayTrustPrompt(manualFingerprint: String? = null) {
     val prompt = _pendingGatewayTrust.value ?: return
+    val acceptedFingerprint =
+      normalizeGatewayTlsFingerprintInput(
+        prompt.fingerprintSha256 ?: manualFingerprint ?: return,
+      ) ?: return
     gatewayLifecycleIntentSeq.incrementAndGet()
     launchGatewayLifecycle {
       if (_pendingGatewayTrust.value != prompt) return@launchGatewayLifecycle
       _pendingGatewayTrust.value = null
-      prefs.saveGatewayTlsFingerprint(prompt.endpoint.stableId, prompt.fingerprintSha256)
+      prefs.saveGatewayTlsFingerprint(prompt.endpoint.stableId, acceptedFingerprint)
+      registerGateway(prompt.endpoint, setActive = true)
+      beginConnect(endpoint = prompt.endpoint, auth = prompt.auth)
+    }
+  }
+
+  fun useSystemGatewayTrustPrompt() {
+    val prompt = _pendingGatewayTrust.value ?: return
+    if (!prompt.systemTrustAvailable) return
+    gatewayLifecycleIntentSeq.incrementAndGet()
+    launchGatewayLifecycle {
+      if (_pendingGatewayTrust.value != prompt) return@launchGatewayLifecycle
+      _pendingGatewayTrust.value = null
+      prefs.clearGatewayTlsFingerprint(prompt.endpoint.stableId)
       registerGateway(prompt.endpoint, setActive = true)
       beginConnect(endpoint = prompt.endpoint, auth = prompt.auth)
     }
@@ -3822,7 +4051,7 @@ class NodeRuntime private constructor(
     }
   }
 
-  private fun gatewayTlsProbeFailureMessage(failure: GatewayTlsProbeFailure?): String =
+  private fun gatewayTlsProbeFailureMessage(failure: GatewayTlsProbeFailure): String =
     when (failure) {
       GatewayTlsProbeFailure.TLS_UNAVAILABLE ->
         nativeText(
@@ -3832,7 +4061,7 @@ class NodeRuntime private constructor(
         nativeText(
           "Failed: secure endpoint reached, but TLS fingerprint verification timed out. Check Tailscale Serve or gateway TLS and retry.",
         ).source
-      GatewayTlsProbeFailure.ENDPOINT_UNREACHABLE, null ->
+      GatewayTlsProbeFailure.ENDPOINT_UNREACHABLE ->
         nativeText("Failed: couldn't reach the secure gateway endpoint for this host.").source
     }
 
@@ -3914,6 +4143,7 @@ class NodeRuntime private constructor(
   }
 
   private fun disconnect(retireRunState: Boolean) {
+    if (wearRealtimeTalkControllerLazy.isInitialized()) wearRealtimeTalkController.abort()
     prepareDisconnect(retireRunState)
     operatorSession.disconnect()
     nodeSession.disconnect()
@@ -4367,6 +4597,9 @@ class NodeRuntime private constructor(
     handleExecApprovalGatewayEvent(event = event, payloadJson = payloadJson)
     micCapture.handleGatewayEvent(event, payloadJson)
     talkMode.handleGatewayEvent(event, payloadJson)
+    if (wearRealtimeTalkControllerLazy.isInitialized()) {
+      wearRealtimeTalkController.handleGatewayEvent(event, payloadJson)
+    }
     chat.handleGatewayEvent(event, payloadJson)
     if (event == "chat" && !payloadJson.isNullOrBlank()) {
       runCatching { json.parseToJsonElement(payloadJson) }
@@ -7313,7 +7546,7 @@ class NodeRuntime private constructor(
         .split(' ', '-', '_')
         .filter { it.isNotBlank() }
         .take(2)
-        .mapNotNull { token -> token.firstOrNull()?.uppercaseChar()?.toString() }
+        .mapNotNull { token -> token.uppercaseFirstGraphemeOrNull() }
         .joinToString("")
     return if (initials.isNotEmpty()) initials else "OC"
   }

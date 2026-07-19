@@ -163,6 +163,7 @@ export async function dispatchEmbeddedRunAttempt(input: {
   const rawAttempt = await runEmbeddedAttemptWithBackend({
     sessionId: runtime.sessionId,
     sessionKey: runtime.sessionKey,
+    conversationRecall: params.conversationRecall,
     promptCacheKey: params.promptCacheKey,
     sandboxSessionKey: params.sandboxSessionKey,
     trigger: params.trigger,
@@ -341,6 +342,8 @@ export async function dispatchEmbeddedRunAttempt(input: {
     ...(params.systemAgentTool ? { systemAgentTool: params.systemAgentTool } : {}),
     cleanupBundleMcpOnRunEnd: params.cleanupBundleMcpOnRunEnd,
     disableMessageTool: params.disableMessageTool,
+    swarmCollector: params.swarmCollector,
+    swarmOutputSchema: params.swarmOutputSchema,
     forceRestartSafeTools: params.forceRestartSafeTools,
     forceMessageTool: params.forceMessageTool,
     enableHeartbeatTool: params.enableHeartbeatTool,

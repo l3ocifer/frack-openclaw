@@ -14,8 +14,10 @@ import { WizardStartResultSchema } from "./wizard.js";
 export const SystemAgentChatParamsSchema = closedObject({
   sessionId: NonEmptyString,
   message: Type.Optional(Type.String()),
-  /** "onboarding" seeds the first-run setup proposal in the greeting. */
-  welcomeVariant: Type.Optional(Type.Union([Type.Literal("onboarding")])),
+  /** Seeds a purpose-specific first greeting for a fresh conversation. */
+  welcomeVariant: Type.Optional(
+    Type.Union([Type.Literal("onboarding"), Type.Literal("new-agent")]),
+  ),
   /** Drop any in-flight approval/wizard state and start the session over. */
   reset: Type.Optional(Type.Boolean()),
   /** Host-only regular-agent delegation context. Never model-authored. */
@@ -31,6 +33,29 @@ export const SystemAgentChatParamsSchema = closedObject({
   ),
 });
 
+/**
+ * Structured choice attached to a chat reply. Card-capable clients render the
+ * options and send back `reply` (default: `label`) as the next message; text
+ * clients ignore this and use the reply prose, which always stands alone.
+ */
+export const SystemAgentChatQuestionSchema = closedObject({
+  id: NonEmptyString,
+  header: NonEmptyString,
+  question: NonEmptyString,
+  options: Type.Array(
+    closedObject({
+      label: NonEmptyString,
+      description: Type.Optional(Type.String()),
+      recommended: Type.Optional(Type.Boolean()),
+      /** Message text a client sends when this option is chosen; defaults to label. */
+      reply: Type.Optional(NonEmptyString),
+    }),
+    { minItems: 2, maxItems: 4 },
+  ),
+  /** Free-text answers are also accepted for this question. */
+  isOther: Type.Optional(Type.Boolean()),
+});
+
 /** One OpenClaw reply; `action` tells clients about conversation handoffs. */
 export const SystemAgentChatResultSchema = closedObject({
   sessionId: NonEmptyString,
@@ -44,8 +69,13 @@ export const SystemAgentChatResultSchema = closedObject({
     Type.Literal("open-agent"),
     Type.Literal("exit"),
   ]),
+  /** Optional localized-draft intent for an `open-agent` handoff. */
+  agentDraft: Type.Optional(Type.Literal("hatch")),
+  /** Destination agent for a specific `open-agent` handoff. */
+  agentId: Type.Optional(NonEmptyString),
   needsApproval: Type.Optional(Type.Boolean()),
   proposalId: Type.Optional(NonEmptyString),
+  question: Type.Optional(SystemAgentChatQuestionSchema),
 });
 
 /**
@@ -226,6 +256,7 @@ export const SystemAgentSetupAuthStartResultSchema = WizardStartResultSchema;
 // Wire types derive directly from local schema consts so public d.ts graphs never
 // pull in the ProtocolSchemas registry.
 export type SystemAgentChatParams = Static<typeof SystemAgentChatParamsSchema>;
+export type SystemAgentChatQuestion = Static<typeof SystemAgentChatQuestionSchema>;
 export type SystemAgentChatResult = Static<typeof SystemAgentChatResultSchema>;
 export type SystemAgentSetupDetectParams = Static<typeof SystemAgentSetupDetectParamsSchema>;
 export type SystemAgentSetupDetectResult = Static<typeof SystemAgentSetupDetectResultSchema>;

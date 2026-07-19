@@ -122,7 +122,7 @@ runs:
 
     - name: Mount dependency sticky disk
       if: inputs.sticky-disk == 'true'
-      uses: useblacksmith/stickydisk@5b350170ae4ef55b536b548ef5f5896e76a6b54f # v1.4.0
+      uses: useblacksmith/stickydisk@6d373c96a74cbde0c99fedc5ea5d3a7ba66ba494 # v1.4.0
       with:
         # One stable disk per Node line. The v2 per-PR/per-manifest-hash keys
         # saturated Blacksmith's installation-wide sticky-disk budget. Install
@@ -144,7 +144,7 @@ runs:
 
     - name: Mount Vitest transform cache sticky disk
       if: inputs.vitest-fs-cache == 'true' && (inputs.sticky-disk == 'true' || inputs.runtime-cache-sticky-disk == 'true') && runner.os != 'Windows'
-      uses: useblacksmith/stickydisk@5b350170ae4ef55b536b548ef5f5896e76a6b54f # v1.4.0
+      uses: useblacksmith/stickydisk@6d373c96a74cbde0c99fedc5ea5d3a7ba66ba494 # v1.4.0
       with:
         # One stable disk per runner shape. The old per-PR overlay disks
         # minted a new backing disk for every PR and helped saturate
@@ -215,7 +215,7 @@ runs:
 
     - name: Mount Node compile cache sticky disk
       if: inputs.node-compile-cache == 'true' && (inputs.sticky-disk == 'true' || inputs.runtime-cache-sticky-disk == 'true') && runner.os != 'Windows'
-      uses: useblacksmith/stickydisk@5b350170ae4ef55b536b548ef5f5896e76a6b54f # v1.4.0
+      uses: useblacksmith/stickydisk@6d373c96a74cbde0c99fedc5ea5d3a7ba66ba494 # v1.4.0
       with:
         # Trusted PRs read the protected dependency bytecode seed but cannot
         # publish feature-branch code into it. Node isolates exact versions and

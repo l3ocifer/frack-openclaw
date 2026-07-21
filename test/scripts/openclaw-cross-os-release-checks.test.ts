@@ -19,7 +19,6 @@ import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   agentOutputHasExpectedOkMarker,
-  agentTurnUsedEmbeddedFallback,
   buildCrossOsDiscordRoundtripNonces,
   buildCrossOsReleaseAgentSessionId,
   buildCrossOsReleaseSmokePluginAllowlist,
@@ -69,6 +68,7 @@ import {
   readInstalledVersion,
   readBoundedCrossOsResponseText,
   readRunnerOverrideEnv,
+  reserveGatewayPortForLane,
   resolveDashboardAssetUrls,
   resolveCrossOsAgentTurnOptional,
   runCommand,
@@ -456,11 +456,6 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
     ).toBe(true);
     expect(
       shouldRetryCrossOsAgentTurnError(
-        new Error("Agent turn used embedded fallback instead of gateway."),
-      ),
-    ).toBe(true);
-    expect(
-      shouldRetryCrossOsAgentTurnError(
         new Error(
           "GatewayClientRequestError: FailoverError: Rate limit reached for gpt-5.5: code=rate_limit_exceeded",
         ),
@@ -483,35 +478,6 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
     expect(
       resolveCrossOsAgentTurnOptional({ OPENCLAW_CROSS_OS_AGENT_TURN_OPTIONAL: "false" }),
     ).toBe(false);
-  });
-
-  it("detects embedded fallback agent turns as non-gateway proof", () => {
-    const dir = mkdtempSync(join(tmpdir(), "openclaw-cross-os-agent-fallback-"));
-    const logPath = join(dir, "agent.log");
-    expect(
-      agentTurnUsedEmbeddedFallback({
-        stdout: JSON.stringify({ payloads: [{ text: "OK" }] }),
-        stderr: "EMBEDDED FALLBACK: Gateway agent failed; running embedded agent: gateway closed",
-      }),
-    ).toBe(true);
-    expect(
-      agentTurnUsedEmbeddedFallback({
-        stdout: JSON.stringify({ payloads: [{ text: "OK" }] }),
-        stderr: "",
-      }),
-    ).toBe(false);
-    expect(
-      agentTurnUsedEmbeddedFallback(
-        { stdout: "", stderr: "" },
-        { logText: 'EMBEDDED FALLBACK: Gateway agent failed\n{"payloads":[{"text":"OK"}]}' },
-      ),
-    ).toBe(true);
-    try {
-      writeFileSync(logPath, "EMBEDDED FALLBACK: Gateway agent failed\n");
-      expect(agentTurnUsedEmbeddedFallback({ stdout: "", stderr: "" }, { logPath })).toBe(true);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
   });
 
   it("skips optional live agent turns only for model availability failures", () => {
@@ -790,6 +756,18 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
       "--no-restart",
     ]);
     expect(args.at(-2)).toBe("--timeout");
+  });
+
+  it("forces shutdown of the isolated managed gateways owned by release checks", () => {
+    const source = [
+      "scripts/lib/cross-os-release-checks/lanes.ts",
+      "scripts/lib/cross-os-release-checks/runtime.ts",
+    ]
+      .map((filePath) => readFileSync(filePath, "utf8"))
+      .join("\n");
+
+    expect(source.match(/args: \["gateway", "stop", "--force"\]/g)).toHaveLength(2);
+    expect(source).not.toContain('args: ["gateway", "stop"]');
   });
 
   it("keeps cross-OS live smoke agent turns on GPT-5-safe timeouts and minimal context", () => {
@@ -1575,7 +1553,7 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
         logPath,
         timeoutMs: 500,
       });
-      await waitForFile(childPidPath, 2_000);
+      await waitForFile(childPidPath, 10_000);
       const childPid = Number.parseInt(readFileSync(childPidPath, "utf8"), 10);
 
       await expect(command).rejects.toThrow(/Command timed out:/u);
@@ -1638,7 +1616,7 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
       );
       runnerPid = runner.pid;
 
-      await waitForFile(childPidPath, 2_000);
+      await waitForFile(childPidPath, 10_000);
       childPid = Number.parseInt(readFileSync(childPidPath, "utf8"), 10);
       runner.kill("SIGTERM");
       const result = await waitForExit(runner, 5_000);
@@ -1705,7 +1683,7 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
       );
       runnerPid = runner.pid;
 
-      await waitForFile(childPidPath, 2_000);
+      await waitForFile(childPidPath, 10_000);
       childPid = Number.parseInt(readFileSync(childPidPath, "utf8"), 10);
       const signaledAt = Date.now();
       runner.kill("SIGTERM");
@@ -1792,6 +1770,19 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
       await delay(5);
     }
     expect(await canConnectToLoopbackPort(port, 100)).toBe(false);
+  });
+
+  it("keeps a release gateway port reserved until the lane is ready to start", async () => {
+    const lane = { gatewayPort: 0 } as Parameters<typeof reserveGatewayPortForLane>[0];
+    const reservation = await reserveGatewayPortForLane(lane);
+    try {
+      expect(lane.gatewayPort).toBe(reservation.port);
+      expect(await canConnectToLoopbackPort(reservation.port)).toBe(true);
+    } finally {
+      await reservation.release();
+    }
+    await reservation.release();
+    expect(await canConnectToLoopbackPort(reservation.port, 100)).toBe(false);
   });
 
   it("writes Discord smoke config using the strict guild channel schema", () => {

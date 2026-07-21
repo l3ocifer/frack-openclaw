@@ -152,6 +152,22 @@ export const zh_TW = {
       summaryTitle: "Memory 匯入摘要",
       title: "發現 memory",
     },
+    appRecommendations: {
+      catalogEntryMissing: "官方插件目錄項目無法使用。",
+      detected: "偵測到的應用程式：{apps}",
+      disclosure: "應用程式名稱使用你設定的模型和 ClawHub 搜尋進行比對。",
+      installFailed: "無法安裝 {name}：{reason}",
+      noneFound: "找不到依應用程式推薦的插件或技能。",
+      option: "{name} — {reason}（偵測到：{app}）",
+      optionThirdParty:
+        "{name} — {reason}（偵測到：{app}）— 第三方 ClawHub 技能；將安裝其發佈者的程式碼",
+      scanning:
+        "正在掃描已安裝的應用程式 — 應用程式名稱會透過你設定的模型與 ClawHub 搜尋進行比對（可透過 wizard.appRecommendations 停用）…",
+      select: "安裝推薦的插件和技能",
+      skillTrust: "信任並安裝 ClawHub 技能 {name}？",
+      skipped: "已略過應用程式推薦：{reason}",
+      title: "應用程式推薦",
+    },
     plugins: {
       configureBackHint: "返回分區選單",
       configureEmpty: "沒有找到帶可設定欄位的插件。",
@@ -257,6 +273,11 @@ export const zh_TW = {
       aiAccessTitle: "AI 存取",
       alreadySetUp: "這裡已經全部設定好了 — 你的 AI 剛剛通過了一次新的檢查。",
       applyFailedFallback: "套用設定時發生問題：{detail}\n我們改為在聊天中一起完成吧。",
+      browserHandoffContinuing: "儀表板已連線 — 請在瀏覽器中繼續。",
+      browserHandoffCopy: "請在瀏覽器中開啟此 URL：\n\n{url}\n\n正在等待儀表板連線…",
+      browserHandoffOpening: "正在開啟 Control UI 儀表板並等待連線…",
+      browserHandoffReady: "瀏覽器已準備好 — 之後可以在設定中找到我。",
+      browserHandoffTitle: "在瀏覽器中繼續",
       codingAgentQuip:
         "我看到這台機器上有 {labels} — 品味不錯。等 AI 就緒後，我還能把它們的記憶一併帶過來。",
       custodianIntro: "你好 — 我是 OpenClaw，負責維護這套系統。我們開始設定吧。",
@@ -324,6 +345,8 @@ export const zh_TW = {
       ttyRequired:
         "Onboarding 需要互動式 TTY。自動化請使用 `openclaw onboard --non-interactive --accept-risk ...`。",
       welcomeTitle: "設定選項",
+      workspaceConflictClassic:
+        "本次驗證保留了已設定的工作區。執行 `{command}` 以檢視並明確核准移動現有 agent fleet。",
     },
     setup: {
       authChoiceFailedRetry: "請選擇其他提供商或認證方式，或選擇暫時跳過。",
@@ -386,6 +409,10 @@ export const zh_TW = {
       testAiSuccess: "AI 存取正常，在 {seconds} 秒內回覆。",
       testAiTitle: "AI 存取測試",
       whatSetup: "你想設定什麼？",
+      workspaceConflictConfirm: "要將現有 agent fleet 移動到要求的工作區嗎？",
+      workspaceConflictNotice:
+        "現有 agent 目前使用 {current}。要求的工作區是 {requested}。變更此 fleet-wide 預設值可能會使 agent 與其記憶和 bootstrap 檔案中斷連線。",
+      workspaceConflictTitle: "現有 agent 工作區",
       workspaceDirectory: "工作區目錄",
     },
     security: {

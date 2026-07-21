@@ -19,6 +19,7 @@ type BundledPackageChannelMetadataModule =
   typeof import("../plugins/bundled-package-channel-metadata.js");
 
 const optionNamesRemove = ["channel", "account", "delete"] as const;
+const CHANNEL_ADD_SELECTION_OPTION_NAMES = new Set(["channel"]);
 
 type RegisterChannelsCliOptions = {
   includeSetupOptions?: boolean;
@@ -205,6 +206,42 @@ export async function registerChannelsCli(
       });
     });
 
+  const deadLetters = channels
+    .command("dead-letters")
+    .description("Inspect and resubmit failed inbound channel events");
+
+  deadLetters
+    .command("list")
+    .description("List failed inbound events for one channel account")
+    .requiredOption("--channel <name>", "Channel id")
+    .option("--account <id>", "Account id", "default")
+    .option("--limit <n>", "Maximum entries", "100")
+    .option("--json", "Output JSON", false)
+    .action(async (opts) => {
+      await runChannelsCommand(async () => {
+        const { channelsDeadLettersListCommand } =
+          await import("../commands/channels/dead-letters.js");
+        await channelsDeadLettersListCommand(opts, defaultRuntime);
+      });
+    });
+
+  deadLetters
+    .command("resubmit")
+    .description("Re-enqueue one failed inbound event")
+    .argument("<event-id>", "Ingress event id")
+    .requiredOption("--channel <name>", "Channel id")
+    .option("--account <id>", "Account id", "default")
+    .option("--json", "Output JSON", false)
+    .action(async (eventId, opts) => {
+      await runChannelsCommand(async () => {
+        const { channelsDeadLettersResubmitCommand } =
+          await import("../commands/channels/dead-letters.js");
+        await channelsDeadLettersResubmitCommand(eventId, opts, defaultRuntime);
+      });
+    });
+
+  applyParentDefaultHelpAction(deadLetters);
+
   const addCommand = channels
     .command("add")
     .description("Add or update a channel account")
@@ -246,7 +283,10 @@ export async function registerChannelsCli(
   addCommand.action(async (channelArg: string | undefined, opts, command) => {
     await runChannelsCommand(async () => {
       const { channelsAddCommand } = await loadChannelsCommands();
-      const hasFlags = hasExplicitOptions(command, getOptionNames(command));
+      const hasFlags = hasExplicitOptions(
+        command,
+        getOptionNames(command).filter((name) => !CHANNEL_ADD_SELECTION_OPTION_NAMES.has(name)),
+      );
       await channelsAddCommand(resolveChannelsAddOptions(channelArg, opts), defaultRuntime, {
         hasFlags,
       });

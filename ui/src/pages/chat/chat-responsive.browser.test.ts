@@ -25,6 +25,12 @@ const TOUCH_TARGET_MIN_PX = 43.5;
 // 8vCPU CI runner that first render can starve well past 10s. Budget the
 // first-render waits for contention while staying inside the 60s testTimeout.
 const APP_FIRST_RENDER_TIMEOUT_MS = 30_000;
+const FULL_APP_TEST_OPTIONS = {
+  // These cases cold-boot Vite through one shared Chromium/server pair. Keep them
+  // as a sequential barrier so concurrent layout pages cannot starve navigation.
+  concurrent: false,
+  timeout: 60_000,
+} as const;
 const LONG_SIDE_CHAT_BODY = Array.from(
   { length: 80 },
   (_, index) => `<p>Line ${index + 1}: keep the complete side result readable.</p>`,
@@ -144,10 +150,10 @@ function activityAlignmentHtml() {
 function chatFooterActionsHtml() {
   return `
     <div class="chat-group-footer-actions">
-      <button class="btn btn--xs chat-expand-btn" type="button" aria-label="Open in canvas">
+      <button class="chat-expand-btn" type="button" aria-label="Open in canvas">
         <span class="chat-expand-btn__icon" aria-hidden="true">${iconSvg()}</span>
       </button>
-      <button class="btn btn--xs chat-copy-btn" type="button" aria-label="Copy as markdown">
+      <button class="chat-copy-btn" type="button" aria-label="Copy as markdown">
         <span class="chat-copy-btn__icon" aria-hidden="true">${iconSvg()}</span>
       </button>
     </div>
@@ -170,7 +176,7 @@ function chatControlsHtml(opts: { agent?: boolean } = {}) {
                 : ""
             }
             <label class="field chat-controls__session chat-controls__session-picker">
-              <select data-chat-session-select="true" aria-label="Chat session"><option>Daily planning</option></select>
+              <select data-chat-session-select="true" aria-label="Chat thread"><option>Daily planning</option></select>
             </label>
             <details class="chat-controls__session chat-controls__inline-select chat-controls__model">
               <summary class="chat-controls__inline-select-trigger" data-chat-model-select="true" data-chat-thinking-select="true" data-chat-select-value="" data-chat-thinking-value="" aria-label="Chat model">gpt-5 · High</summary>
@@ -229,7 +235,7 @@ function chatHeaderControlsHtml(hidden = false) {
               <select data-chat-agent-filter="true" aria-label="Filter sessions by agent"><option>Valentina</option></select>
             </label>
             <label class="field chat-controls__session chat-controls__session-picker">
-              <select data-chat-session-select="true" aria-label="Chat session"><option>main</option></select>
+              <select data-chat-session-select="true" aria-label="Chat thread"><option>main</option></select>
             </label>
             <details class="chat-controls__session chat-controls__inline-select chat-controls__model">
               <summary class="chat-controls__inline-select-trigger" data-chat-model-select="true" data-chat-thinking-select="true" data-chat-select-value="gpt-5.5" data-chat-thinking-value="" aria-label="Chat model">gpt-5.5 · High</summary>
@@ -384,7 +390,7 @@ function chatHtml(opts: ChatFixtureOptions = {}, mobileNavLayout = false) {
                     <div class="agent-chat__composer-meta">
                       <div class="context-usage">
                         <details>
-                          <summary class="context-ring" role="status" aria-label="Session context usage: 46k/200k (23%)">
+                          <summary class="context-ring" role="status" aria-label="Thread context usage: 46k/200k (23%)">
                             <svg class="context-ring__dial" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
                               <circle class="context-ring__track" cx="8" cy="8" r="6.5"></circle>
                               <circle class="context-ring__fill" cx="8" cy="8" r="6.5"></circle>
@@ -445,6 +451,17 @@ async function openBrowserPage(width: number, height: number): Promise<Page> {
 
 async function closeBrowserPage(page: Page): Promise<void> {
   await page.close().catch(() => {});
+}
+
+async function waitForLayoutSettled(page: Page): Promise<void> {
+  // Raw DOM mutations skip Playwright's actionability wait. Allow style invalidation
+  // to land, then observe one stable frame before measuring viewport bounds.
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      }),
+  );
 }
 
 async function getRect(page: Page, selector: string) {
@@ -598,11 +615,81 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
     }
   });
 
+  it("applies configured chat width to tool rows and composer without changing defaults", async () => {
+    const page = await openBrowserPage(1600, 900);
+    const renderFixture = async (configured: boolean) => {
+      const style = configured
+        ? 'style="--chat-thread-max-width: 82%; --chat-message-max-width: 100%"'
+        : "";
+      await page.setContent(`<!doctype html><html><head><style>${readUiCss()}</style></head><body>
+        <section class="card chat" ${style}>
+          <div class="chat-thread chat-thread--direct" role="log">
+            <div class="chat-thread-inner">
+              <div class="chat-group tool">
+                <div class="chat-avatar tool">A</div>
+                <div class="chat-group-messages" data-tool-lane>
+                  <div class="chat-bubble chat-bubble--tool-shell" data-tool-shell>
+                    <div class="chat-tool-msg-collapse">Tool output</div>
+                  </div>
+                </div>
+              </div>
+              <div class="chat-group tool chat-group--activity">
+                <div class="chat-avatar tool">A</div>
+                <div class="chat-group-messages" data-activity-lane>
+                  <div class="chat-activity-group">Activity</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="chat-prs" data-chat-prs>Pull requests</div>
+          <div class="agent-chat__composer-shell" data-composer>
+            <div class="agent-chat__input">Composer</div>
+          </div>
+        </section>
+      </body></html>`);
+      return await page.evaluate(() => {
+        const rect = (selector: string) => {
+          const bounds = document.querySelector<HTMLElement>(selector)!.getBoundingClientRect();
+          return { center: bounds.x + bounds.width / 2, width: bounds.width };
+        };
+        return {
+          activity: rect("[data-activity-lane]"),
+          composer: rect("[data-composer]"),
+          prs: rect("[data-chat-prs]"),
+          shell: rect("[data-tool-shell]"),
+          thread: rect(".chat-thread-inner"),
+          tool: rect("[data-tool-lane]"),
+        };
+      });
+    };
+
+    try {
+      const defaults = await renderFixture(false);
+      expect(defaults.thread.width).toBeCloseTo(768, 0);
+      expect(defaults.composer.width).toBeCloseTo(defaults.thread.width, 0);
+      expect(defaults.prs.width).toBeCloseTo(defaults.thread.width, 0);
+      expect(defaults.tool.width).toBeCloseTo(defaults.thread.width, 0);
+      expect(defaults.shell.width).toBeCloseTo(760, 0);
+      expect(defaults.activity.width).toBeCloseTo(760, 0);
+
+      const configured = await renderFixture(true);
+      for (const key of ["activity", "shell", "tool"] as const) {
+        expect(configured[key].width).toBeCloseTo(configured.thread.width, 0);
+      }
+      expect(configured.composer.width).toBeCloseTo(configured.prs.width, 0);
+      for (const rect of Object.values(configured)) {
+        expect(rect.center).toBeCloseTo(configured.thread.center, 0);
+      }
+      expect(configured.thread.width).toBeGreaterThan(defaults.thread.width);
+      expect(configured.composer.width).toBeGreaterThan(defaults.composer.width);
+    } finally {
+      await closeBrowserPage(page);
+    }
+  });
+
   it(
-    "reveals message context on timestamp hover and keeps click-to-open",
-    // This full-app case shares Chromium with concurrent layout pages; match
-    // the UI runner's cold-browser budget instead of imposing a flaky 20s cap.
-    { timeout: 60_000 },
+    "reveals, pins, and dismisses message context from the timestamp",
+    FULL_APP_TEST_OPTIONS,
     async () => {
       if (!realChatServer) {
         throw new Error("Expected the Control UI server to be ready");
@@ -621,7 +708,10 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
             },
           ],
         });
-        await page.goto(`${realChatServer.baseUrl}chat`);
+        await page.goto(`${realChatServer.baseUrl}chat`, {
+          waitUntil: "domcontentloaded",
+          timeout: APP_FIRST_RENDER_TIMEOUT_MS,
+        });
         await page
           .getByText("Context hover regression fixture.")
           .waitFor({ timeout: APP_FIRST_RENDER_TIMEOUT_MS });
@@ -665,55 +755,77 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
         await context.waitFor({ state: "hidden", timeout: 10_000 });
 
         await page.locator(".chat-text").first().hover();
+        await page.locator(".msg-meta__summary").hover();
+        // Escape only owns pinned disclosures; it must not corrupt an active
+        // hover preview before the click converts that preview into a pin.
+        await page.keyboard.press("Escape");
         await page.locator(".msg-meta__summary").click();
         await page.mouse.move(0, 0);
         // Click-to-open must survive the pointer leaving the message group.
         await context.waitFor({ state: "visible", timeout: 10_000 });
         expect(await details.getAttribute("open")).toBe("");
+
+        await page.mouse.click(0, 0);
+        await context.waitFor({ state: "hidden", timeout: 10_000 });
+        expect(await details.getAttribute("open")).toBeNull();
+
+        await page.locator(".chat-text").first().hover();
+        await page.locator(".msg-meta__summary").click();
+        await context.waitFor({ state: "visible", timeout: 10_000 });
+        await page.keyboard.press("Escape");
+        await context.waitFor({ state: "hidden", timeout: 10_000 });
+        expect(await details.getAttribute("open")).toBeNull();
       } finally {
         await closeBrowserPage(page);
       }
     },
   );
 
-  it("renders encoded media extensions from assistant output and transcript fields", async () => {
-    if (!realChatServer) {
-      throw new Error("Expected the Control UI server to be ready");
-    }
-    const imageUrl = "https://cdn.example/render%2Epng?download=1";
-    const videoUrl = "https://cdn.example/clip%2Emp4?download=1";
-    const page = await openBrowserPage(1366, 900);
-    try {
-      await page.route("https://cdn.example/**", (route) => route.abort());
-      await installMockGateway(page, {
-        historyMessages: [
-          {
-            content: `MEDIA:${imageUrl}`,
-            role: "assistant",
-            timestamp: Date.UTC(2026, 6, 9, 10, 0),
-          },
-          {
-            content: "Encoded transcript video",
-            MediaPath: videoUrl,
-            role: "user",
-            timestamp: Date.UTC(2026, 6, 9, 10, 1),
-          },
-        ],
-      });
-      await page.goto(`${realChatServer.baseUrl}chat`);
+  it(
+    "renders encoded media extensions from assistant output and transcript fields",
+    FULL_APP_TEST_OPTIONS,
+    async () => {
+      if (!realChatServer) {
+        throw new Error("Expected the Control UI server to be ready");
+      }
+      const imageUrl = "https://cdn.example/render%2Epng?download=1";
+      const videoUrl = "https://cdn.example/clip%2Emp4?download=1";
+      const page = await openBrowserPage(1366, 900);
+      try {
+        await page.route("https://cdn.example/**", (route) => route.abort());
+        await installMockGateway(page, {
+          historyMessages: [
+            {
+              content: `MEDIA:${imageUrl}`,
+              role: "assistant",
+              timestamp: Date.UTC(2026, 6, 9, 10, 0),
+            },
+            {
+              content: "Encoded transcript video",
+              MediaPath: videoUrl,
+              role: "user",
+              timestamp: Date.UTC(2026, 6, 9, 10, 1),
+            },
+          ],
+        });
+        await page.goto(`${realChatServer.baseUrl}chat`, {
+          waitUntil: "domcontentloaded",
+          timeout: APP_FIRST_RENDER_TIMEOUT_MS,
+        });
 
-      const image = page.locator("img.chat-message-image");
-      const video = page.locator("video");
-      // First wait absorbs the cold-app render; both elements land in the same
-      // history render pass, so the video follows immediately after.
-      await image.waitFor({ timeout: APP_FIRST_RENDER_TIMEOUT_MS });
-      await video.waitFor({ timeout: 10_000 });
-      expect(await image.getAttribute("src")).toBe(imageUrl);
-      expect(await video.getAttribute("src")).toBe(videoUrl);
-    } finally {
-      await closeBrowserPage(page);
-    }
-  });
+        const image = page.locator("img.chat-message-image");
+        const video = page.locator("video");
+        // First wait absorbs the cold-app render; both elements land in the same
+        // history render pass, so the video follows immediately after.
+        await image.waitFor({ timeout: APP_FIRST_RENDER_TIMEOUT_MS });
+        await video.waitFor({ timeout: 10_000 });
+        expect(await image.getAttribute("src")).toBe(imageUrl);
+        expect(await video.getAttribute("src")).toBe(videoUrl);
+      } finally {
+        await closeBrowserPage(page);
+      }
+    },
+  );
 
   it.each([
     [393, 852],
@@ -1837,6 +1949,7 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
         await page.locator(".chat-view-menu").evaluate((node) => {
           node.setAttribute("open", "");
         });
+        await waitForLayoutSettled(page);
 
         const settingsMenu = await getRect(page, ".chat-view-menu[open]");
         expect(settingsMenu.left).toBeGreaterThanOrEqual(0);
@@ -1861,6 +1974,7 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
         await page.locator(".chat-view-menu").evaluate((node) => {
           node.setAttribute("open", "");
         });
+        await waitForLayoutSettled(page);
 
         const settingsMenu = await getRect(page, ".chat-view-menu[open]");
         expect(settingsMenu.left).toBeGreaterThanOrEqual(0);
@@ -1895,7 +2009,10 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
           },
         ],
       });
-      await page.goto(`${realChatServer.baseUrl}chat`);
+      await page.goto(`${realChatServer.baseUrl}chat`, {
+        waitUntil: "domcontentloaded",
+        timeout: APP_FIRST_RENDER_TIMEOUT_MS,
+      });
       await page
         .getByText("Short landscape slash command keyboard regression fixture.")
         .waitFor({ timeout: APP_FIRST_RENDER_TIMEOUT_MS });

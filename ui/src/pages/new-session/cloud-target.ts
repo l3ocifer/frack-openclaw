@@ -432,6 +432,7 @@ export async function startCloudInitialTurn(
 type SessionMenuItemOptions = {
   value: string;
   label: string;
+  sub?: string;
   checked: boolean;
   disabled?: boolean;
   title?: string;
@@ -455,6 +456,7 @@ export function renderSessionMenuItem(params: SessionMenuItemOptions, submitting
         >${params.checked ? icons.check : nothing}</span
       >
       <span class="session-menu__text">${params.label}</span>
+      ${params.sub ? html`<span class="session-menu__sub">${params.sub}</span>` : nothing}
     </button>
   `;
 }
@@ -464,6 +466,7 @@ export function renderCloudProfileMenuItems(params: {
   selectedId: string;
   submitting: boolean;
   disabled?: boolean;
+  disabledReason?: string;
   onSelect: (profileId: string) => void;
 }) {
   return params.profiles.map((profile) =>
@@ -473,7 +476,10 @@ export function renderCloudProfileMenuItems(params: {
         label: t("newSession.cloudWorker", { profile: profile.id }),
         checked: params.selectedId === profile.id,
         disabled: params.disabled,
-        title: t("newSession.cloudWorkerProvider", { provider: profile.providerId }),
+        title:
+          params.disabled && params.disabledReason
+            ? params.disabledReason
+            : t("newSession.cloudWorkerProvider", { provider: profile.providerId }),
         onSelect: () => params.onSelect(profile.id),
       },
       params.submitting,

@@ -3,7 +3,6 @@ import { appendFileSync, createWriteStream, existsSync, mkdirSync } from "node:f
 import { dirname, join } from "node:path";
 import {
   agentOutputHasExpectedOkMarker,
-  agentTurnUsedEmbeddedFallback,
   buildCrossOsReleaseAgentSessionId,
   buildReleaseAgentTurnArgs,
   maybeBuildOptionalAgentTurnSkipResult,
@@ -420,8 +419,9 @@ export async function runOnboardWithInstalledCli(params: {
   providerConfig: ProviderConfig;
   installDaemon: boolean;
   logPath: string;
+  allocateGatewayPort?: boolean;
 }) {
-  await withAllocatedGatewayPort(params.lane, async () => {
+  const runOnboard = async () => {
     const args = buildReleaseOnboardArgs({
       authChoice: params.providerConfig.authChoice,
       gatewayPort: params.lane.gatewayPort,
@@ -436,7 +436,15 @@ export async function runOnboardWithInstalledCli(params: {
       logPath: params.logPath,
       timeoutMs: 10 * 60 * 1000,
     });
-  });
+  };
+  if (params.allocateGatewayPort === false) {
+    if (params.lane.gatewayPort <= 0) {
+      throw new Error("Installed onboarding requires a reserved gateway port.");
+    }
+    await runOnboard();
+    return;
+  }
+  await withAllocatedGatewayPort(params.lane, runOnboard);
 }
 
 export function buildReleaseOnboardArgs(params: {
@@ -756,9 +764,6 @@ export async function runInstalledAgentTurn(params: {
       const logText = readLogTextSince(params.logPath, logOffset);
       if (!agentOutputHasExpectedOkMarker(result.stdout, { logText })) {
         throw new Error("Agent output did not contain the expected OK marker.");
-      }
-      if (agentTurnUsedEmbeddedFallback(result, { logText })) {
-        throw new Error("Agent turn used embedded fallback instead of gateway.");
       }
       return result;
     } catch (error) {

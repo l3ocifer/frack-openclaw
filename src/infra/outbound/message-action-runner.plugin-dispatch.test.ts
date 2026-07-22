@@ -105,6 +105,7 @@ const mocks = vi.hoisted(() => ({
   prepareOutboundMirrorRoute: vi.fn(),
   beginTerminalSourceReplyDelivery: vi.fn(),
   cancelTerminalSourceReplyDelivery: vi.fn(),
+  isDeliveredCurrentSourceReply: vi.fn(() => false),
   reconcileTerminalSourceReplyDelivery: vi.fn(),
 }));
 
@@ -130,6 +131,7 @@ vi.mock("./message.gateway.runtime.js", () => ({
 vi.mock("./source-reply-mirror.js", () => ({
   beginTerminalSourceReplyDelivery: mocks.beginTerminalSourceReplyDelivery,
   cancelTerminalSourceReplyDelivery: mocks.cancelTerminalSourceReplyDelivery,
+  isDeliveredCurrentSourceReply: mocks.isDeliveredCurrentSourceReply,
   reconcileTerminalSourceReplyDelivery: mocks.reconcileTerminalSourceReplyDelivery,
 }));
 
@@ -2310,10 +2312,8 @@ describe("runMessageAction plugin dispatch", () => {
               enabled: true,
             },
           },
-          messages: {
-            tts: {
-              auto: "tagged",
-            },
+          tts: {
+            auto: "tagged",
           },
         } as OpenClawConfig,
         action: "send",
@@ -2387,10 +2387,8 @@ describe("runMessageAction plugin dispatch", () => {
               enabled: true,
             },
           },
-          messages: {
-            tts: {
-              auto: "tagged",
-            },
+          tts: {
+            auto: "tagged",
           },
         } as OpenClawConfig,
         action: "send",
@@ -2833,7 +2831,10 @@ describe("runMessageAction plugin dispatch", () => {
     const handleAction = vi.fn(
       async ({ cfg, params }: { cfg: OpenClawConfig; params: Record<string, unknown> }) => {
         const message = typeof params.message === "string" ? params.message : "";
-        const responsePrefix = cfg.messages?.responsePrefix;
+        const responsePrefix = Object.values(cfg.channels ?? {}).find(
+          (entry): entry is { responsePrefix?: string } =>
+            typeof entry === "object" && entry !== null && "responsePrefix" in entry,
+        )?.responsePrefix;
         const rawMessage =
           responsePrefix && message.startsWith(`${responsePrefix} `)
             ? message.slice(responsePrefix.length + 1)
@@ -3104,9 +3105,9 @@ describe("runMessageAction plugin dispatch", () => {
           channels: {
             cardchat: {
               enabled: true,
+              responsePrefix: "[Nexus]",
             },
           },
-          messages: { responsePrefix: "[Nexus]" },
         } as OpenClawConfig,
         action: "send",
         params: {

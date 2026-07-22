@@ -58,13 +58,12 @@ vi.mock("../../agents/model-selection.js", async () => {
   );
   return {
     ...actual,
-    isCliProvider: (provider: string, cfg?: OpenClawConfig) => {
+    isCliProvider: (provider: string, _cfg?: OpenClawConfig) => {
       const normalized = provider.trim().toLowerCase();
       return (
         normalized === "claude-cli" ||
         normalized === "google-gemini-cli" ||
-        normalized === "codex-cli" ||
-        Boolean(cfg?.agents?.defaults?.cliBackends?.[normalized])
+        normalized === "codex-cli"
       );
     },
   };
@@ -443,6 +442,7 @@ describe("runReplyAgent media path normalization", () => {
       "generate chart",
       {
         steeringMode: "all",
+        isInboundUserMessage: true,
         taskSuggestionDeliveryMode: "gateway",
       },
     );
@@ -478,6 +478,7 @@ describe("runReplyAgent media path normalization", () => {
       "compare these",
       {
         steeringMode: "all",
+        isInboundUserMessage: true,
         images,
         taskSuggestionDeliveryMode: undefined,
       },
@@ -544,7 +545,11 @@ describe("runReplyAgent media path normalization", () => {
     expect(queueEmbeddedAgentMessageWithOutcomeAsyncMock).toHaveBeenLastCalledWith(
       "session",
       "summarize the audio",
-      { steeringMode: "all", taskSuggestionDeliveryMode: undefined },
+      {
+        steeringMode: "all",
+        isInboundUserMessage: true,
+        taskSuggestionDeliveryMode: undefined,
+      },
     );
     expect(enqueueFollowupRunMock).not.toHaveBeenCalled();
   });

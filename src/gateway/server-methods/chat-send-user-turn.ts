@@ -1,5 +1,6 @@
 import type { GatewayClientInfo } from "../../../packages/gateway-protocol/src/client-info.js";
 import type { MsgContext } from "../../auto-reply/templating.js";
+import { projectMediaFacts } from "../../media/media-facts.js";
 import type { PromptImageOrderEntry } from "../../media/prompt-image-order.js";
 import type { SavedMedia } from "../../media/store.js";
 import type { InputProvenance } from "../../sessions/input-provenance.js";
@@ -112,6 +113,7 @@ function buildChatSendMessageContext(params: {
   suppressCommandInterpretation: boolean;
   systemInputProvenance?: InputProvenance;
   systemProvenanceReceipt?: string;
+  toolBindings?: Readonly<Record<string, unknown>>;
 }) {
   const commandBody = params.parsedMessage;
   const commandSource =
@@ -175,14 +177,17 @@ function buildChatSendMessageContext(params: {
       : {}),
     GatewayClientScopes: params.client?.connect?.scopes ?? [],
     GatewayClientCaps: params.client?.connect?.caps ?? [],
+    GatewayRunToolBindings: params.toolBindings,
   };
   if (params.mediaPathOffloadPaths.length > 0) {
     // Pre-staged offloads must use the channel media fields and marker so the
     // dispatch path renders their prompt note without staging them a second time.
-    ctx.MediaPath = params.mediaPathOffloadPaths[0];
-    ctx.MediaPaths = params.mediaPathOffloadPaths;
-    ctx.MediaType = params.mediaPathOffloadTypes[0];
-    ctx.MediaTypes = params.mediaPathOffloadTypes;
+    ctx.media = params.mediaPathOffloadPaths.map((pathValue, index) => ({
+      path: pathValue,
+      contentType: params.mediaPathOffloadTypes[index],
+      workspaceDir: params.mediaPathOffloadWorkspaceDir,
+    }));
+    Object.assign(ctx, projectMediaFacts(ctx.media));
     ctx.MediaWorkspaceDir = params.mediaPathOffloadWorkspaceDir;
     ctx.MediaStaged = true;
   }
@@ -203,6 +208,7 @@ export function prepareChatSendUserTurn(params: {
     | "suppressCommandInterpretation"
     | "systemInputProvenance"
     | "systemProvenanceReceipt"
+    | "toolBindings"
   >;
   session: Pick<PreparedChatSendSession, "agentId" | "clientRunId" | "sessionKey">;
   admission: Pick<AdmittedChatSend, "originatingRoute">;
@@ -233,12 +239,7 @@ export function prepareChatSendUserTurn(params: {
   userTurn.setInputPromise(
     preparedUserTurnMediaPromise.then(buildChatSendUserTurnMedia).then((media) => ({
       ...userTurn.baseInput,
-      ...(media.length > 0
-        ? {
-            media,
-            mediaOnlyText: "[User sent media without caption]",
-          }
-        : {}),
+      ...(media.length > 0 ? { media } : {}),
     })),
   );
   const pluginBoundMediaFieldsPromise =
@@ -259,6 +260,7 @@ export function prepareChatSendUserTurn(params: {
     suppressCommandInterpretation: request.suppressCommandInterpretation,
     systemInputProvenance: request.systemInputProvenance,
     systemProvenanceReceipt: request.systemProvenanceReceipt,
+    toolBindings: request.toolBindings,
   });
   const mediaPathOffloadsIncludeImages = attachments.mediaPathOffloadTypes.some((type) =>
     type.startsWith("image/"),

@@ -113,6 +113,11 @@ type AgentRuntimeMessagePresentationAction =
       decision: "allow-once" | "allow-always" | "deny";
     }
   | {
+      type: "question";
+      questionId: string;
+      optionValue: string;
+    }
+  | {
       type: "url";
       url: string;
     }
@@ -259,11 +264,16 @@ type AgentRuntimeReplyPayloadLocation = {
 /** Portable reply payload emitted by agent runtimes before channel rendering. */
 type AgentRuntimeReplyPayload = {
   text?: string;
+  fallbackText?: {
+    text: string;
+    replacesPayloadIndex?: number;
+  };
   mediaUrl?: string;
   mediaUrls?: string[];
   trustedLocalMedia?: boolean;
   sensitiveMedia?: boolean;
   presentation?: AgentRuntimeMessagePresentation;
+  presentationTextMode?: "fallback";
   delivery?: AgentRuntimeReplyPayloadDelivery;
   /**
    * @deprecated Use presentation.

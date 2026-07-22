@@ -49,6 +49,7 @@ const MEMORY_EMBEDDING_PROVIDERS_KEY = Symbol.for("openclaw.memoryEmbeddingProvi
 const MCPORTER_STATE_KEY = Symbol.for("openclaw.mcporterState");
 const QMD_EMBED_QUEUE_KEY = Symbol.for("openclaw.qmdEmbedQueueTail");
 const QMD_UPDATE_QUEUE_KEY = Symbol.for("openclaw.qmdUpdateQueueState");
+const BUILT_IN_WATCH_DEBOUNCE_MS = 1_500;
 
 type WatchOptions = {
   ignored?: (watchPath: string) => boolean;
@@ -59,9 +60,11 @@ type LeaseCall = Parameters<PluginStateLeaseRunner>;
 type MockStream = EventEmitter & { setEncoding: ReturnType<typeof vi.fn> };
 
 interface MockChild extends EventEmitter {
+  exitCode: number | null;
+  signalCode: NodeJS.Signals | null;
   stdout: MockStream;
   stderr: MockStream;
-  kill: (signal?: NodeJS.Signals) => void;
+  kill: (signal?: NodeJS.Signals) => boolean;
   closeWith: (code?: number | null) => void;
 }
 
@@ -69,13 +72,18 @@ function createMockChild(params?: { autoClose?: boolean; closeDelayMs?: number }
   const stdout = Object.assign(new EventEmitter(), { setEncoding: vi.fn() });
   const stderr = Object.assign(new EventEmitter(), { setEncoding: vi.fn() });
   const child: MockChild = Object.assign(new EventEmitter(), {
+    exitCode: null,
+    signalCode: null,
     stdout,
     stderr,
     closeWith: (code: number | null = 0) => {
-      child.emit("close", code);
+      child.exitCode = code;
+      child.emit("close", code, child.signalCode);
     },
-    kill: () => {
+    kill: (signal: NodeJS.Signals = "SIGTERM") => {
+      child.signalCode = signal;
       // Let timeout rejection win in tests that simulate hung QMD commands.
+      return true;
     },
   });
   if (params?.autoClose !== false) {
@@ -737,6 +745,44 @@ describe("QmdMemoryManager", () => {
     expect(secondDebug.at(-1)?.qmd?.searchPlan?.sources).toEqual(["sessions"]);
   });
 
+  it("keeps remember-only session exports out of ordinary manager searches", async () => {
+    cfg = {
+      ...cfg,
+      agents: {
+        ...cfg.agents,
+        list: [{ id: "main", memory: { search: { rememberAcrossConversations: true } } }],
+      },
+      memory: {
+        backend: "qmd",
+        qmd: {
+          includeDefaultMemory: false,
+          update: { interval: "0s", debounceMs: 60_000, onBoot: false },
+          paths: [{ path: workspaceDir, pattern: "**/*.md", name: "workspace" }],
+        },
+      },
+    } as OpenClawConfig;
+    spawnMock.mockImplementation((_cmd: string, args: string[]) => {
+      if (args[0] === "search") {
+        const child = createMockChild({ autoClose: false });
+        emitAndClose(child, "stdout", "[]");
+        return child;
+      }
+      return createMockChild();
+    });
+    const { manager } = await createManager({ mode: "cli" });
+
+    await manager.search("remember-only", {
+      sessionKey: "agent:main:cli:direct:memory-search",
+    });
+
+    const searchCalls = spawnMock.mock.calls
+      .filter(([, args]) => args[0] === "search")
+      .map(([, args]) => args);
+    expect(searchCalls.some((args) => args.includes("workspace-main"))).toBe(true);
+    expect(searchCalls.some((args) => args.includes("sessions-main"))).toBe(false);
+    await manager.close();
+  });
+
   it("rewrites stale multi-collection probe cache when combined filters are rejected", async () => {
     await configureMemoryCoreDreamingStateForTests();
     const otherWorkspaceDir = path.join(tmpRoot, "other-workspace");
@@ -830,14 +876,98 @@ describe("QmdMemoryManager", () => {
     return path.join(stateDir, "agents", selectedAgentId, "qmd", "xdg-config", "qmd", "index.yml");
   }
 
+  function resolveMemoryBackendConfigForTest(sourceCfg: OpenClawConfig, selectedAgentId: string) {
+    const resolved = resolveMemoryBackendConfig({ cfg: sourceCfg, agentId: selectedAgentId });
+    const qmdTestConfig = sourceCfg.memory?.qmd as
+      | {
+          mcporter?: { enabled?: boolean; serverName?: string; startDaemon?: boolean };
+          update?: {
+            commandTimeoutMs?: number;
+            debounceMs?: number;
+            embedInterval?: string;
+            embedTimeoutMs?: number;
+            interval?: string;
+            onBoot?: boolean;
+            startup?: "off" | "idle" | "blocking";
+            startupDelayMs?: number;
+            updateTimeoutMs?: number;
+            waitForBootSync?: boolean;
+          };
+        }
+      | undefined;
+    if (!resolved.qmd) {
+      return resolved;
+    }
+
+    // Removed config knobs still drive focused manager mechanics in this test file only.
+    Object.assign(resolved.qmd.mcporter, qmdTestConfig?.mcporter);
+    const update = qmdTestConfig?.update;
+    if (!update) {
+      return resolved;
+    }
+    const parseInterval = (value: string | undefined, defaultUnitMs: number) => {
+      if (!value) {
+        return undefined;
+      }
+      const match = /^(\d+)(ms|s|m|h)?$/.exec(value.trim());
+      if (!match) {
+        return undefined;
+      }
+      const amount = Number(match[1]);
+      const unitMsBySuffix: Record<string, number> = {
+        ms: 1,
+        s: 1_000,
+        m: 60_000,
+        h: 3_600_000,
+      };
+      return amount * (unitMsBySuffix[match[2] ?? ""] ?? defaultUnitMs);
+    };
+    Object.assign(resolved.qmd.update, {
+      ...(update.interval !== undefined
+        ? { intervalMs: parseInterval(update.interval, 60_000) }
+        : {}),
+      ...(update.debounceMs !== undefined ? { debounceMs: update.debounceMs } : {}),
+      ...(update.onBoot !== undefined ? { onBoot: update.onBoot } : {}),
+      ...(update.startup !== undefined ? { startup: update.startup } : {}),
+      ...(update.startupDelayMs !== undefined ? { startupDelayMs: update.startupDelayMs } : {}),
+      ...(update.waitForBootSync !== undefined ? { waitForBootSync: update.waitForBootSync } : {}),
+      ...(update.embedInterval !== undefined
+        ? { embedIntervalMs: parseInterval(update.embedInterval, 60_000) }
+        : {}),
+      ...(update.commandTimeoutMs !== undefined
+        ? { commandTimeoutMs: update.commandTimeoutMs }
+        : {}),
+      ...(update.updateTimeoutMs !== undefined ? { updateTimeoutMs: update.updateTimeoutMs } : {}),
+      ...(update.embedTimeoutMs !== undefined ? { embedTimeoutMs: update.embedTimeoutMs } : {}),
+    });
+    return resolved;
+  }
+
   async function createManager(params?: {
     mode?: "full" | "status" | "cli";
     cfg?: OpenClawConfig;
     agentId?: string;
   }) {
-    const cfgToUse = params?.cfg ?? cfg;
+    const sourceCfg = params?.cfg ?? cfg;
+    const cfgToUse: OpenClawConfig = {
+      ...sourceCfg,
+      memory: {
+        ...sourceCfg.memory,
+        search: {
+          rememberAcrossConversations: false,
+          ...sourceCfg.memory?.search,
+        },
+      },
+
+      agents: {
+        ...sourceCfg.agents,
+        defaults: {
+          ...sourceCfg.agents?.defaults,
+        },
+      },
+    };
     const selectedAgentId = params?.agentId ?? agentId;
-    const resolved = resolveMemoryBackendConfig({ cfg: cfgToUse, agentId: selectedAgentId });
+    const resolved = resolveMemoryBackendConfigForTest(cfgToUse, selectedAgentId);
     const manager = trackManager(
       await QmdMemoryManager.create({
         cfg: cfgToUse,
@@ -896,12 +1026,6 @@ describe("QmdMemoryManager", () => {
       agents: {
         defaults: {
           workspace: workspaceDir,
-          memorySearch: {
-            provider: "openai",
-            model: "mock-embed",
-            store: { vector: { enabled: false } },
-            sync: { watch: false, onSessionStart: false, onSearch: false },
-          },
         },
         list: [{ id: agentId, default: true, workspace: workspaceDir }],
       },
@@ -911,6 +1035,14 @@ describe("QmdMemoryManager", () => {
           includeDefaultMemory: false,
           update: { interval: "0s", debounceMs: 60_000, onBoot: false },
           paths: [{ path: workspaceDir, pattern: "**/*.md", name: "workspace" }],
+        },
+
+        search: {
+          provider: "openai",
+          model: "mock-embed",
+          rememberAcrossConversations: false,
+          store: { vector: { enabled: false } },
+          sync: { watch: false, onSessionStart: false, onSearch: false },
         },
       },
     } as OpenClawConfig;
@@ -983,12 +1115,6 @@ describe("QmdMemoryManager", () => {
       agents: {
         defaults: {
           workspace: workspaceDir,
-          memorySearch: {
-            provider: "openai",
-            model: "mock-embed",
-            store: { vector: { enabled: false } },
-            sync: { watch: false, onSessionStart: true, onSearch: false },
-          },
         },
         list: [{ id: agentId, default: true, workspace: workspaceDir }],
       },
@@ -998,6 +1124,13 @@ describe("QmdMemoryManager", () => {
           includeDefaultMemory: false,
           update: { interval: "0s", debounceMs: 0, onBoot: false },
           paths: [{ path: workspaceDir, pattern: "**/*.md", name: "workspace" }],
+        },
+
+        search: {
+          provider: "openai",
+          model: "mock-embed",
+          store: { vector: { enabled: false } },
+          sync: { watch: false, onSessionStart: true, onSearch: false },
         },
       },
     } as OpenClawConfig;
@@ -1027,12 +1160,6 @@ describe("QmdMemoryManager", () => {
       agents: {
         defaults: {
           workspace: workspaceDir,
-          memorySearch: {
-            provider: "openai",
-            model: "mock-embed",
-            store: { vector: { enabled: false } },
-            sync: { watch: false, onSessionStart: true, onSearch: false },
-          },
         },
         list: [{ id: agentId, default: true, workspace: workspaceDir }],
       },
@@ -1042,6 +1169,13 @@ describe("QmdMemoryManager", () => {
           includeDefaultMemory: false,
           update: { interval: "0s", debounceMs: 0, onBoot: false },
           paths: [{ path: workspaceDir, pattern: "**/*.md", name: "workspace" }],
+        },
+
+        search: {
+          provider: "openai",
+          model: "mock-embed",
+          store: { vector: { enabled: false } },
+          sync: { watch: false, onSessionStart: true, onSearch: false },
         },
       },
     } as OpenClawConfig;
@@ -1082,12 +1216,6 @@ describe("QmdMemoryManager", () => {
       agents: {
         defaults: {
           workspace: workspaceDir,
-          memorySearch: {
-            provider: "openai",
-            model: "mock-embed",
-            store: { vector: { enabled: false } },
-            sync: { watch: true, watchDebounceMs: 25, onSessionStart: false, onSearch: false },
-          },
         },
         list: [{ id: agentId, default: true, workspace: workspaceDir }],
       },
@@ -1097,6 +1225,13 @@ describe("QmdMemoryManager", () => {
           includeDefaultMemory: false,
           update: { interval: "0s", debounceMs: 0, onBoot: false },
           paths: [{ path: workspaceDir, pattern: "**/*.md", name: "workspace" }],
+        },
+
+        search: {
+          provider: "openai",
+          model: "mock-embed",
+          store: { vector: { enabled: false } },
+          sync: { watch: true, onSessionStart: false, onSearch: false },
         },
       },
     } as OpenClawConfig;
@@ -1134,7 +1269,7 @@ describe("QmdMemoryManager", () => {
     });
     expect(manager.status().dirty).toBe(true);
 
-    await vi.advanceTimersByTimeAsync(25);
+    await vi.advanceTimersByTimeAsync(BUILT_IN_WATCH_DEBOUNCE_MS);
 
     const updateCalls = spawnMock.mock.calls.filter((call) => call[1]?.[0] === "update");
     expect(updateCalls).toHaveLength(1);
@@ -1150,12 +1285,6 @@ describe("QmdMemoryManager", () => {
       agents: {
         defaults: {
           workspace: workspaceDir,
-          memorySearch: {
-            provider: "openai",
-            model: "mock-embed",
-            store: { vector: { enabled: false } },
-            sync: { watch: true, watchDebounceMs: 25, onSessionStart: false, onSearch: false },
-          },
         },
         list: [{ id: agentId, default: true, workspace: workspaceDir }],
       },
@@ -1169,6 +1298,13 @@ describe("QmdMemoryManager", () => {
             pattern: "**/*.md",
             name: path.basename(root),
           })),
+        },
+
+        search: {
+          provider: "openai",
+          model: "mock-embed",
+          store: { vector: { enabled: false } },
+          sync: { watch: true, onSessionStart: false, onSearch: false },
         },
       },
     } as OpenClawConfig;
@@ -1197,12 +1333,6 @@ describe("QmdMemoryManager", () => {
       agents: {
         defaults: {
           workspace: workspaceDir,
-          memorySearch: {
-            provider: "openai",
-            model: "mock-embed",
-            store: { vector: { enabled: false } },
-            sync: { watch: true, watchDebounceMs: 25, onSessionStart: false, onSearch: false },
-          },
         },
         list: [{ id: agentId, default: true, workspace: workspaceDir }],
       },
@@ -1215,6 +1345,13 @@ describe("QmdMemoryManager", () => {
             { path: workspaceDir, pattern: "**/*.md", name: "workspace" },
             { path: nestedRoot, pattern: "**/*.md", name: "build" },
           ],
+        },
+
+        search: {
+          provider: "openai",
+          model: "mock-embed",
+          store: { vector: { enabled: false } },
+          sync: { watch: true, onSessionStart: false, onSearch: false },
         },
       },
     } as OpenClawConfig;
@@ -1235,12 +1372,6 @@ describe("QmdMemoryManager", () => {
       agents: {
         defaults: {
           workspace: workspaceDir,
-          memorySearch: {
-            provider: "openai",
-            model: "mock-embed",
-            store: { vector: { enabled: false } },
-            sync: { watch: true, watchDebounceMs: 25, onSessionStart: false, onSearch: false },
-          },
         },
         list: [{ id: agentId, default: true, workspace: workspaceDir }],
       },
@@ -1250,6 +1381,13 @@ describe("QmdMemoryManager", () => {
           includeDefaultMemory: false,
           update: { interval: "0s", debounceMs: 0, onBoot: false },
           paths: [{ path: workspaceDir, pattern: "**/*.md", name: "workspace" }],
+        },
+
+        search: {
+          provider: "openai",
+          model: "mock-embed",
+          store: { vector: { enabled: false } },
+          sync: { watch: true, onSessionStart: false, onSearch: false },
         },
       },
     } as OpenClawConfig;
@@ -1269,10 +1407,10 @@ describe("QmdMemoryManager", () => {
     });
     await fs.writeFile(notesPath, "hello updated");
 
-    await vi.advanceTimersByTimeAsync(25);
+    await vi.advanceTimersByTimeAsync(BUILT_IN_WATCH_DEBOUNCE_MS);
     expect(spawnMock.mock.calls.filter((call) => call[1]?.[0] === "update")).toHaveLength(0);
 
-    await vi.advanceTimersByTimeAsync(25);
+    await vi.advanceTimersByTimeAsync(BUILT_IN_WATCH_DEBOUNCE_MS);
     expect(spawnMock.mock.calls.filter((call) => call[1]?.[0] === "update")).toHaveLength(1);
 
     await manager.close();
@@ -1414,10 +1552,6 @@ describe("QmdMemoryManager", () => {
         defaults: {
           ...cfg.agents?.defaults,
           workspace: workspaceDir,
-          memorySearch: {
-            ...cfg.agents?.defaults?.memorySearch,
-            sync: { watch: false, onSessionStart: true, onSearch: true },
-          },
         },
       },
       memory: {
@@ -1427,6 +1561,11 @@ describe("QmdMemoryManager", () => {
           searchMode: "search",
           update: { interval: "0s", debounceMs: 60_000, onBoot: false },
           paths: [{ path: workspaceDir, pattern: "**/*.md", name: "workspace" }],
+        },
+
+        search: {
+          ...cfg.memory?.search,
+          sync: { watch: false, onSessionStart: true, onSearch: true },
         },
       },
     } as OpenClawConfig;
@@ -1485,7 +1624,7 @@ describe("QmdMemoryManager", () => {
       return createMockChild();
     });
 
-    const resolved = resolveMemoryBackendConfig({ cfg, agentId });
+    const resolved = resolveMemoryBackendConfigForTest(cfg, agentId);
     const createPromise = QmdMemoryManager.create({
       cfg,
       agentId,
@@ -1588,7 +1727,7 @@ describe("QmdMemoryManager", () => {
       return createMockChild();
     });
 
-    const resolved = resolveMemoryBackendConfig({ cfg, agentId: devAgentId });
+    const resolved = resolveMemoryBackendConfigForTest(cfg, devAgentId);
     const manager = trackManager(
       await QmdMemoryManager.create({
         cfg,
@@ -2346,14 +2485,16 @@ describe("QmdMemoryManager", () => {
         },
       },
     } as OpenClawConfig;
+    const updateSpawned = createDeferred<void>();
     spawnMock.mockImplementation((_cmd: string, args: string[]) => {
       if (args[0] === "update") {
+        updateSpawned.resolve();
         return createMockChild({ autoClose: false });
       }
       return createMockChild();
     });
 
-    const resolved = resolveMemoryBackendConfig({ cfg, agentId });
+    const resolved = resolveMemoryBackendConfigForTest(cfg, agentId);
     const createPromise = QmdMemoryManager.create({
       cfg,
       agentId,
@@ -2365,6 +2506,8 @@ describe("QmdMemoryManager", () => {
     const manager = requireValue(trackManager(await createPromise), "manager missing");
     const syncPromise = manager.sync({ reason: "manual" });
     const rejected = expect(syncPromise).rejects.toThrow("qmd update timed out after 20ms");
+    await vi.advanceTimersByTimeAsync(0);
+    await updateSpawned.promise;
     await vi.advanceTimersByTimeAsync(20);
     await rejected;
     await manager.close();
@@ -3000,10 +3143,10 @@ describe("QmdMemoryManager", () => {
     ]);
     expect(addCallsAfterMissing).toBeGreaterThan(0);
     expectMockMessageContains(logWarnMock, "repairing collections and retrying once");
-    const [repairLease] = writeLeaseCalls();
-    expect(repairLease?.[0].signal?.aborted).toBe(false);
+    const repairLeases = writeLeaseCalls();
+    expect(repairLeases.some(([options]) => options.signal?.aborted)).toBe(false);
     callerController.abort();
-    expect(repairLease?.[0].signal?.aborted).toBe(true);
+    expect(repairLeases.some(([options]) => options.signal?.aborted)).toBe(true);
 
     await manager.close();
   });
@@ -5403,7 +5546,7 @@ describe("QmdMemoryManager", () => {
       return createMockChild();
     });
 
-    const resolved = resolveMemoryBackendConfig({ cfg, agentId });
+    const resolved = resolveMemoryBackendConfigForTest(cfg, agentId);
     const createPromise = QmdMemoryManager.create({
       cfg,
       agentId,
@@ -6537,6 +6680,56 @@ describe("QmdMemoryManager", () => {
     await manager.close();
   });
 
+  it("blocks memory_get reads of remember-only session exports", async () => {
+    cfg = {
+      ...cfg,
+      agents: {
+        ...cfg.agents,
+        list: [{ id: "main", memory: { search: { rememberAcrossConversations: true } } }],
+      },
+      memory: {
+        backend: "qmd",
+        qmd: {
+          includeDefaultMemory: false,
+          update: { interval: "0s", debounceMs: 60_000, onBoot: false },
+          paths: [{ path: workspaceDir, pattern: "**/*.md", name: "workspace" }],
+        },
+      },
+    } as OpenClawConfig;
+    const { manager } = await createManager();
+
+    // Remember-only export is search-only for trusted recall; ordinary
+    // memory_get must not read transcript exports the operator never opted into.
+    await expect(manager.readFile({ relPath: "qmd/sessions-main/export.md" })).rejects.toThrow(
+      "path required",
+    );
+
+    await manager.close();
+  });
+
+  it("keeps explicitly configured session exports readable via memory_get", async () => {
+    cfg = {
+      ...cfg,
+      memory: {
+        backend: "qmd",
+        qmd: {
+          includeDefaultMemory: false,
+          update: { interval: "0s", debounceMs: 60_000, onBoot: false },
+          sessions: { enabled: true },
+          paths: [{ path: workspaceDir, pattern: "**/*.md", name: "workspace" }],
+        },
+      },
+    } as OpenClawConfig;
+    const { manager } = await createManager();
+
+    await expect(manager.readFile({ relPath: "qmd/sessions-main/export.md" })).resolves.toEqual({
+      path: "qmd/sessions-main/export.md",
+      text: "",
+    });
+
+    await manager.close();
+  });
+
   it("rejects non-memory workspace markdown reads", async () => {
     await fs.writeFile(path.join(workspaceDir, "window.md"), "secret", "utf-8");
     await fs.mkdir(path.join(workspaceDir, ".memory"), { recursive: true });
@@ -7360,12 +7553,6 @@ describe("QmdMemoryManager", () => {
         qmd: {
           includeDefaultMemory: false,
           sessions: { enabled: true },
-          update: {
-            interval: "0s",
-            debounceMs: 0,
-            onBoot: true,
-            waitForBootSync: true,
-          },
           paths: [{ path: workspaceDir, pattern: "**/*.md", name: "workspace" }],
         },
       },
@@ -7385,6 +7572,7 @@ describe("QmdMemoryManager", () => {
     });
 
     const { manager } = await createManager({ mode: "full" });
+    await manager.sync({ reason: "manual", force: true });
     const sessionExportDir = path.join(stateDir, "agents", agentId, "qmd", "sessions");
     const exported = (await fs.readdir(sessionExportDir)).toSorted();
 

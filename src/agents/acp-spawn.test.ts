@@ -36,13 +36,9 @@ function createDefaultSpawnConfig(): OpenClawConfig {
     session: {
       mainKey: "main",
       scope: "per-sender",
-    },
-    channels: {
-      discord: {
-        threadBindings: {
-          enabled: true,
-          spawnSessions: true,
-        },
+      threadBindings: {
+        enabled: true,
+        spawnSessions: true,
       },
     },
   };
@@ -58,7 +54,6 @@ const hoisted = vi.hoisted(() => {
   const initializeSessionMock = vi.fn();
   const getAcpSessionManagerMock = vi.fn();
   const startAcpSpawnParentStreamRelayMock = vi.fn();
-  const resolveAcpSpawnStreamLogPathMock = vi.fn();
   const loadSessionStoreMock = vi.fn();
   const readAcpSessionMetaMock = vi.fn();
   const resolveStorePathMock = vi.fn();
@@ -71,7 +66,7 @@ const hoisted = vi.hoisted(() => {
     return normalized || null;
   });
   const cleanupFailedAcpSpawnMock = vi.fn();
-  const createRunningTaskRunMock = vi.fn();
+  const registerSubagentRunMock = vi.fn();
   const countActiveRunsForSessionMock = vi.fn();
   const getSubagentRunByChildSessionKeyMock = vi.fn();
   const listTasksForOwnerKeyMock = vi.fn();
@@ -150,7 +145,6 @@ const hoisted = vi.hoisted(() => {
     initializeSessionMock,
     getAcpSessionManagerMock,
     startAcpSpawnParentStreamRelayMock,
-    resolveAcpSpawnStreamLogPathMock,
     loadSessionStoreMock,
     readAcpSessionMetaMock,
     resolveStorePathMock,
@@ -160,7 +154,7 @@ const hoisted = vi.hoisted(() => {
     getLoadedChannelPluginMock,
     normalizeChannelIdMock,
     cleanupFailedAcpSpawnMock,
-    createRunningTaskRunMock,
+    registerSubagentRunMock,
     countActiveRunsForSessionMock,
     getSubagentRunByChildSessionKeyMock,
     listTasksForOwnerKeyMock,
@@ -224,18 +218,15 @@ vi.mock("../infra/heartbeat-wake.js", () => ({
   areHeartbeatsEnabled: hoisted.areHeartbeatsEnabledMock,
 }));
 
-vi.mock("../tasks/detached-task-runtime.js", () => ({
-  createRunningTaskRun: hoisted.createRunningTaskRunMock,
-}));
-
 vi.mock("./acp-spawn-parent-stream.js", () => ({
-  resolveAcpSpawnStreamLogPath: hoisted.resolveAcpSpawnStreamLogPathMock,
   startAcpSpawnParentStreamRelay: hoisted.startAcpSpawnParentStreamRelayMock,
 }));
 
 vi.mock("./subagent-registry.js", () => ({
   countActiveRunsForSession: hoisted.countActiveRunsForSessionMock,
   getSubagentRunByChildSessionKey: hoisted.getSubagentRunByChildSessionKeyMock,
+  // ACP registration deliberately moved behind the shared spawn pipeline.
+  registerSubagentRun: hoisted.registerSubagentRunMock,
 }));
 
 vi.mock("../tasks/runtime-internal.js", () => ({
@@ -634,12 +625,11 @@ function enableLineCurrentConversationBindings(): void {
 function enableTelegramCurrentConversationBindings(): void {
   replaceSpawnConfig({
     ...hoisted.state.cfg,
-    channels: {
-      ...hoisted.state.cfg.channels,
-      telegram: {
-        threadBindings: {
-          enabled: true,
-        },
+    session: {
+      ...hoisted.state.cfg.session,
+      threadBindings: {
+        ...hoisted.state.cfg.session?.threadBindings,
+        enabled: true,
       },
     },
   });
@@ -706,7 +696,7 @@ describe("spawnAcpDirect", () => {
     hoisted.getChannelPluginMock.mockReset().mockReturnValue(undefined);
     hoisted.getLoadedChannelPluginMock.mockReset().mockReturnValue(undefined);
     hoisted.cleanupFailedAcpSpawnMock.mockReset().mockResolvedValue(undefined);
-    hoisted.createRunningTaskRunMock.mockReset().mockReturnValue(undefined);
+    hoisted.registerSubagentRunMock.mockReset();
     hoisted.countActiveRunsForSessionMock.mockReset().mockReturnValue(0);
     hoisted.getSubagentRunByChildSessionKeyMock.mockReset().mockReturnValue(null);
     hoisted.listTasksForOwnerKeyMock.mockReset().mockReturnValue([]);
@@ -811,9 +801,6 @@ describe("spawnAcpDirect", () => {
     hoisted.startAcpSpawnParentStreamRelayMock
       .mockReset()
       .mockImplementation(() => createRelayHandle());
-    hoisted.resolveAcpSpawnStreamLogPathMock
-      .mockReset()
-      .mockReturnValue("/tmp/sess-main.acp-stream.jsonl");
     hoisted.resolveStorePathMock.mockReset().mockReturnValue("/tmp/codex-sessions.json");
     hoisted.readAcpSessionMetaMock.mockReset().mockReturnValue(undefined);
     hoisted.loadSessionStoreMock.mockReset().mockImplementation(() => {
@@ -874,6 +861,8 @@ describe("spawnAcpDirect", () => {
     expectSessionPatchFields({
       key: accepted.childSessionKey,
       spawnedBy: "agent:main:main",
+      completionOwnerSessionKey: "agent:main:main",
+      inheritedToolPolicyVersion: 1,
     });
     expectBindingCallFields({
       targetKind: "session",
@@ -2268,6 +2257,15 @@ describe("spawnAcpDirect", () => {
       accountId: "bot-alpha",
       to: `room:${boundRoom}`,
     });
+    expect(hoisted.registerSubagentRunMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requesterOrigin: expect.objectContaining({
+          channel: "matrix",
+          accountId: "bot-alpha",
+          to: `room:${boundRoom}`,
+        }),
+      }),
+    );
   });
 
   it.each([
@@ -2424,7 +2422,6 @@ describe("spawnAcpDirect", () => {
 
     const accepted = expectAcceptedSpawn(result);
     expect(accepted.mode).toBe("run");
-    expect(accepted.streamLogPath).toBeUndefined();
     expect(hoisted.startAcpSpawnParentStreamRelayMock).not.toHaveBeenCalled();
     if (expectTranscriptPersistence) {
       expectRecordFields(
@@ -2530,12 +2527,11 @@ describe("spawnAcpDirect", () => {
   it("fails fast when Discord ACP thread spawn is disabled", async () => {
     replaceSpawnConfig({
       ...hoisted.state.cfg,
-      channels: {
-        discord: {
-          threadBindings: {
-            enabled: true,
-            spawnSessions: false,
-          },
+      session: {
+        ...hoisted.state.cfg.session,
+        threadBindings: {
+          enabled: true,
+          spawnSessions: false,
         },
       },
     });
@@ -2625,7 +2621,6 @@ describe("spawnAcpDirect", () => {
     );
 
     const accepted = expectAcceptedSpawn(result);
-    expect(accepted.streamLogPath).toBe("/tmp/sess-main.acp-stream.jsonl");
     const agentCall = hoisted.callGatewayMock.mock.calls
       .map((call: unknown[]) => call[0] as { method?: string; params?: Record<string, unknown> })
       .find((request) => request.method === "agent");
@@ -2647,7 +2642,7 @@ describe("spawnAcpDirect", () => {
     expectRelayCallFields({
       parentSessionKey: "agent:main:main",
       agentId: "codex",
-      logPath: "/tmp/sess-main.acp-stream.jsonl",
+      childSessionId: "sess-123",
       emitStartNotice: false,
     });
     const relayRuns = hoisted.startAcpSpawnParentStreamRelayMock.mock.calls.map(
@@ -2655,11 +2650,6 @@ describe("spawnAcpDirect", () => {
     );
     expect(relayRuns).toContain(agentCall?.params?.idempotencyKey);
     expect(relayRuns).toContain(accepted.runId);
-    const streamPathInput = expectRecordFields(
-      firstMockCall(hoisted.resolveAcpSpawnStreamLogPathMock, "stream log path resolution")[0],
-      {},
-    );
-    expect(streamPathInput.childSessionKey).toMatch(/^agent:codex:acp:/);
     expect(firstHandle.dispose).toHaveBeenCalledTimes(1);
     expect(firstHandle.notifyStarted).not.toHaveBeenCalled();
     expect(secondHandle.notifyStarted).toHaveBeenCalledTimes(1);
@@ -2724,7 +2714,6 @@ describe("spawnAcpDirect", () => {
 
     const accepted = expectAcceptedSpawn(result);
     expect(accepted.mode).toBe("run");
-    expect(accepted.streamLogPath).toBe("/tmp/sess-main.acp-stream.jsonl");
     const agentCall = hoisted.callGatewayMock.mock.calls
       .map((call: unknown[]) => call[0] as { method?: string; params?: Record<string, unknown> })
       .find((request) => request.method === "agent");
@@ -2735,7 +2724,7 @@ describe("spawnAcpDirect", () => {
     expectRelayCallFields({
       parentSessionKey: "agent:main:subagent:parent",
       agentId: "codex",
-      logPath: "/tmp/sess-main.acp-stream.jsonl",
+      childSessionId: "sess-123",
       deliveryContext: {
         channel: "discord",
         to: "channel:parent-channel",
@@ -2812,7 +2801,6 @@ describe("spawnAcpDirect", () => {
 
     const accepted = expectAcceptedSpawn(result);
     expect(accepted.mode).toBe("run");
-    expect(accepted.streamLogPath).toBeUndefined();
     expect(hoisted.startAcpSpawnParentStreamRelayMock).not.toHaveBeenCalled();
   });
 
@@ -2843,7 +2831,6 @@ describe("spawnAcpDirect", () => {
 
     const accepted = expectAcceptedSpawn(result);
     expect(accepted.mode).toBe("run");
-    expect(accepted.streamLogPath).toBeUndefined();
     expect(hoisted.startAcpSpawnParentStreamRelayMock).not.toHaveBeenCalled();
   });
 
@@ -2877,7 +2864,6 @@ describe("spawnAcpDirect", () => {
 
     const accepted = expectAcceptedSpawn(result);
     expect(accepted.mode).toBe("run");
-    expect(accepted.streamLogPath).toBeUndefined();
     expect(hoisted.startAcpSpawnParentStreamRelayMock).not.toHaveBeenCalled();
   });
 
@@ -2902,9 +2888,9 @@ describe("spawnAcpDirect", () => {
     );
 
     expectAcceptedSpawn(result);
-    expect(hoisted.createRunningTaskRunMock).toHaveBeenCalledWith(
+    expect(hoisted.registerSubagentRunMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        ownerKey: "global",
+        requesterSessionKey: "global",
         childSessionKey: expect.stringMatching(/^agent:codex:acp:/),
         agentId: "codex",
         requesterAgentId: "research",
@@ -2933,7 +2919,6 @@ describe("spawnAcpDirect", () => {
 
     const accepted = expectAcceptedSpawn(result);
     expect(accepted.mode).toBe("run");
-    expect(accepted.streamLogPath).toBeUndefined();
     expect(hoisted.startAcpSpawnParentStreamRelayMock).not.toHaveBeenCalled();
   });
 
@@ -2963,7 +2948,6 @@ describe("spawnAcpDirect", () => {
 
     const accepted = expectAcceptedSpawn(result);
     expect(accepted.mode).toBe("run");
-    expect(accepted.streamLogPath).toBeUndefined();
     expect(hoisted.startAcpSpawnParentStreamRelayMock).not.toHaveBeenCalled();
   });
 
@@ -2982,7 +2966,6 @@ describe("spawnAcpDirect", () => {
 
     const accepted = expectAcceptedSpawn(result);
     expect(accepted.mode).toBe("run");
-    expect(accepted.streamLogPath).toBeUndefined();
     expect(hoisted.startAcpSpawnParentStreamRelayMock).not.toHaveBeenCalled();
   });
 
@@ -2999,7 +2982,6 @@ describe("spawnAcpDirect", () => {
 
     const accepted = expectAcceptedSpawn(result);
     expect(accepted.mode).toBe("run");
-    expect(accepted.streamLogPath).toBeUndefined();
     expect(hoisted.startAcpSpawnParentStreamRelayMock).not.toHaveBeenCalled();
   });
 
@@ -3020,7 +3002,6 @@ describe("spawnAcpDirect", () => {
 
     const accepted = expectAcceptedSpawn(result);
     expect(accepted.mode).toBe("run");
-    expect(accepted.streamLogPath).toBeUndefined();
     expect(hoisted.startAcpSpawnParentStreamRelayMock).not.toHaveBeenCalled();
   });
 
@@ -3053,7 +3034,6 @@ describe("spawnAcpDirect", () => {
 
     const accepted = expectAcceptedSpawn(result);
     expect(accepted.mode).toBe("run");
-    expect(accepted.streamLogPath).toBeUndefined();
     expect(hoisted.startAcpSpawnParentStreamRelayMock).not.toHaveBeenCalled();
   });
 
@@ -3234,6 +3214,28 @@ describe("spawnAcpDirect", () => {
         }),
       }),
     );
+  });
+
+  it("preserves the ACP failure code when run registration fails", async () => {
+    hoisted.registerSubagentRunMock.mockImplementationOnce(() => {
+      throw new Error("registry unavailable");
+    });
+
+    const result = await spawnAcpDirect(
+      {
+        task: "Investigate flaky tests",
+        agentId: "codex",
+      },
+      {
+        agentSessionKey: "agent:main:main",
+      },
+    );
+
+    const failed = expectFailedSpawn(result, "error");
+    expect(failed.errorCode).toBe("spawn_failed");
+    expect(failed.error).toContain("registry unavailable");
+    expect(failed.runId).toBe("run-1");
+    expect(hoisted.cleanupFailedAcpSpawnMock).toHaveBeenCalledTimes(1);
   });
 
   it('rejects streamTo="parent" without requester session context', async () => {

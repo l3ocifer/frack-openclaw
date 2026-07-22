@@ -10,7 +10,6 @@ import {
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import {
   hasOutboundReplyContent,
-  isReasoningReplyPayload,
   resolveSendableOutboundReplyParts,
 } from "openclaw/plugin-sdk/reply-payload";
 import {
@@ -22,7 +21,6 @@ import {
 import { appendCronStyleCurrentTimeLine } from "../agents/current-time.js";
 import { resolveEmbeddedSessionLane } from "../agents/embedded-agent-runner/lanes.js";
 import { listActiveEmbeddedRunSessionKeys } from "../agents/embedded-agent-runner/run-state.js";
-import { formatReasoningMessage } from "../agents/embedded-agent-utils.js";
 import { resolveModelRefFromString, type ModelRef } from "../agents/model-selection.js";
 import { resolveEffectiveAgentRuntime } from "../agents/thinking-runtime.js";
 import { DEFAULT_HEARTBEAT_FILENAME } from "../agents/workspace.js";
@@ -88,14 +86,20 @@ import {
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { AgentDefaultsConfig } from "../config/types.agent-defaults.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { hasActiveCronJobs } from "../cron/active-jobs.js";
+import {
+  hasActiveCronJobs,
+  hasActiveCronJobsExceptMarker,
+  isCronActiveJobMarkerCurrent,
+  type CronActiveJobMarker,
+} from "../cron/active-jobs.js";
 import { resolveCronSession } from "../cron/isolated-agent/session.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { getActivePluginChannelRegistry } from "../plugins/runtime.js";
 import {
-  getCommandLaneSnapshots,
   getQueueSize,
+  isCommandLaneTaskMarkerCurrent,
   type CommandLaneSnapshot,
+  type CommandLaneTaskMarker,
 } from "../process/command-queue.js";
 import { CommandLane } from "../process/lanes.js";
 import {
@@ -130,6 +134,7 @@ import {
   isRelayableExecCompletionEvent,
 } from "./heartbeat-events-filter.js";
 import { emitHeartbeatEvent, resolveIndicatorType } from "./heartbeat-events.js";
+import { persistHeartbeatOutcome } from "./heartbeat-outcome-store.js";
 import { HEARTBEAT_RUN_SCOPE, type HeartbeatRunScope } from "./heartbeat-run-scope.js";
 import {
   computeNextHeartbeatPhaseDueMs,
@@ -151,7 +156,6 @@ import {
 import {
   areHeartbeatsEnabled,
   HEARTBEAT_SKIP_CRON_IN_PROGRESS,
-  HEARTBEAT_SKIP_LANES_BUSY,
   HEARTBEAT_SKIP_REQUESTS_IN_FLIGHT,
   type HeartbeatRunResult,
   type HeartbeatWakeHandler,
@@ -170,6 +174,7 @@ import {
   resolveHeartbeatDeliveryTargetWithSessionRoute,
   resolveHeartbeatSenderContext,
 } from "./outbound/targets.js";
+import { readRegularFile } from "./regular-file.js";
 import {
   consumeSelectedSystemEventEntries,
   peekSystemEventEntries,
@@ -195,67 +200,7 @@ const loadHeartbeatRunnerRuntime = createLazyRuntimeModule(
   () => import("./heartbeat-runner.runtime.js"),
 );
 
-const HEARTBEAT_ALWAYS_BUSY_LANES = [CommandLane.Cron, CommandLane.CronNested] as const;
 const DEFAULT_HEARTBEAT_TIMEOUT_SECONDS = 10 * 60;
-
-function hasQueuedWorkInLanes(
-  lanes: readonly string[],
-  getSize: (lane?: string) => number,
-): boolean {
-  return lanes.some((lane) => getSize(lane) > 0);
-}
-
-function hasQueuedWorkInLaneSnapshots(
-  snapshots: readonly CommandLaneSnapshot[],
-  matchesLane: (lane: string) => boolean,
-): boolean {
-  return snapshots.some(
-    (snapshot) => matchesLane(snapshot.lane) && snapshot.activeCount + snapshot.queuedCount > 0,
-  );
-}
-
-/**
- * Return true when `lane` carries a session-key suffix that parses to
- * `agentId`. Lane name shapes covered:
- *
- * - `session:agent:<agentId>:...` — embedded-runner per-session lanes
- *   (subagent runs, compaction, context maintenance).
- * - `nested:agent:<agentId>:...` — per-session nested-agent lanes.
- *
- * The generic `subagent` and `nested` global lanes carry no agent identity,
- * so they cannot be scoped here; rely on the session-keyed variants and the
- * per-session `session-lane-busy` skip at the heartbeat dispatch site.
- */
-function laneBelongsToAgent(lane: string, agentId: string): boolean {
-  let suffix: string | undefined;
-  if (lane.startsWith("session:")) {
-    suffix = lane.slice("session:".length);
-  } else if (lane.startsWith("nested:")) {
-    suffix = lane.slice("nested:".length);
-  }
-  if (!suffix) {
-    return false;
-  }
-  const parsed = parseAgentSessionKey(suffix);
-  if (!parsed) {
-    return false;
-  }
-  return normalizeAgentId(parsed.agentId) === normalizeAgentId(agentId);
-}
-
-/**
- * Per-agent variant of the opt-in busy check. Previously the runner consulted
- * a global `subagent` lane size, which meant a zombie subagent on any one
- * agent silently disabled every other agent's heartbeat. Restrict the check
- * to lanes attributable to `agentId` via session-key parsing so a stuck
- * subagent on `main` no longer starves `tank`, `narcissus`, or `shiva`.
- */
-function hasAgentOptInBusyLaneWork(
-  agentId: string,
-  getSnapshots: () => readonly CommandLaneSnapshot[],
-): boolean {
-  return hasQueuedWorkInLaneSnapshots(getSnapshots(), (lane) => laneBelongsToAgent(lane, agentId));
-}
 
 function hasActiveRunForAgent(agentId: string, listSessionKeys: () => readonly string[]): boolean {
   const normalizedAgentId = normalizeAgentId(agentId);
@@ -546,27 +491,28 @@ function shouldUseHeartbeatResponseToolPrompt(params: {
   return usesCodexHarness(params);
 }
 
-function resolveHeartbeatAckMaxChars(cfg: OpenClawConfig, heartbeat?: HeartbeatConfig) {
-  return Math.max(
-    0,
-    heartbeat?.ackMaxChars ??
-      cfg.agents?.defaults?.heartbeat?.ackMaxChars ??
-      DEFAULT_HEARTBEAT_ACK_MAX_CHARS,
-  );
+function resolveHeartbeatAckMaxChars(_cfg: OpenClawConfig, _heartbeat?: HeartbeatConfig) {
+  return DEFAULT_HEARTBEAT_ACK_MAX_CHARS;
 }
 
-function isHeartbeatTypingEnabled(params: { cfg: OpenClawConfig; hasChatDelivery: boolean }) {
+function isHeartbeatTypingEnabled(params: {
+  cfg: OpenClawConfig;
+  agentId: string;
+  hasChatDelivery: boolean;
+}) {
   if (!params.hasChatDelivery) {
     return false;
   }
-  const agentCfg = params.cfg.agents?.defaults;
-  const typingMode = params.cfg.session?.typingMode ?? agentCfg?.typingMode;
+  const typingMode =
+    resolveAgentConfig(params.cfg, params.agentId)?.typingMode ??
+    params.cfg.agents?.defaults?.typingMode;
   return typingMode !== "never";
 }
 
-function resolveHeartbeatTypingIntervalSeconds(cfg: OpenClawConfig) {
-  const agentCfg = cfg.agents?.defaults;
-  const configured = agentCfg?.typingIntervalSeconds ?? cfg.session?.typingIntervalSeconds;
+function resolveHeartbeatTypingIntervalSeconds(cfg: OpenClawConfig, agentId: string) {
+  const configured =
+    resolveAgentConfig(cfg, agentId)?.typingIntervalSeconds ??
+    cfg.agents?.defaults?.typingIntervalSeconds;
   return typeof configured === "number" && configured > 0 ? configured : undefined;
 }
 
@@ -760,42 +706,6 @@ function resolveStaleHeartbeatIsolatedSessionKey(params: {
   return undefined;
 }
 
-// Display-format check (not a classifier): whether reasoning text is already
-// rendered in the heartbeat "Reasoning:" / "Thinking..._" form, so it should be
-// delivered as-is rather than re-wrapped by formatReasoningMessage. Reasoning
-// classification itself is the shared SDK `isReasoningReplyPayload`.
-const HEARTBEAT_REASONING_DISPLAY_PREFIX = /^(?:Reasoning:|Thinking\.{0,3}(?=\s*_))/u;
-
-function resolveHeartbeatReasoningPayloads(
-  replyResult: ReplyPayload | ReplyPayload[] | undefined,
-): ReplyPayload[] {
-  const payloads = Array.isArray(replyResult) ? replyResult : replyResult ? [replyResult] : [];
-  const reasoningPayloads: ReplyPayload[] = [];
-  for (const payload of payloads) {
-    const text = typeof payload.text === "string" ? payload.text : "";
-    // Shared classifier keeps this lane in lockstep with the heartbeat reply
-    // selector so a legacy-formatted reasoning payload is never both skipped
-    // here and surfaced as the visible reply (or vice versa). See #92242.
-    if (!isReasoningReplyPayload(payload)) {
-      continue;
-    }
-
-    const formattedText = HEARTBEAT_REASONING_DISPLAY_PREFIX.test(text.trimStart())
-      ? text
-      : formatReasoningMessage(text);
-    if (!formattedText.trim()) {
-      continue;
-    }
-
-    const deliverablePayload: ReplyPayload = { ...payload, text: formattedText };
-    delete deliverablePayload.isReasoning;
-    delete deliverablePayload.mediaUrl;
-    delete deliverablePayload.mediaUrls;
-    reasoningPayloads.push(deliverablePayload);
-  }
-  return reasoningPayloads;
-}
-
 async function restoreHeartbeatUpdatedAt(params: {
   storePath: string;
   sessionKey: string;
@@ -985,9 +895,18 @@ async function resolveHeartbeatPreflight(params: {
 
   const workspaceDir = resolveAgentWorkspaceDir(params.cfg, params.agentId);
   const heartbeatFilePath = path.join(workspaceDir, DEFAULT_HEARTBEAT_FILENAME);
+  const MAX_HEARTBEAT_FILE_BYTES = 16 * 1024 * 1024;
   let heartbeatFileContent: string | undefined;
   try {
-    heartbeatFileContent = await fs.readFile(heartbeatFilePath, "utf-8");
+    // Resolve symlinks so a HEARTBEAT.md pointing to a regular file keeps
+    // working; missing/broken symlinks still surface as ENOENT below.
+    const resolvedHeartbeatFilePath = await fs.realpath(heartbeatFilePath);
+    heartbeatFileContent = (
+      await readRegularFile({
+        filePath: resolvedHeartbeatFilePath,
+        maxBytes: MAX_HEARTBEAT_FILE_BYTES,
+      })
+    ).buffer.toString("utf-8");
     const tasks = parseHeartbeatTasks(heartbeatFileContent);
     if (
       isHeartbeatContentEffectivelyEmpty(heartbeatFileContent) &&
@@ -1013,6 +932,12 @@ async function resolveHeartbeatPreflight(params: {
       // heartbeat instructions live outside the file), so keep the run active.
       // The heartbeat prompt already says "if it exists".
       return basePreflight;
+    }
+    // Oversized files loaded in full before the cap existed, so tell the
+    // operator why their heartbeat instructions no longer apply instead of
+    // dropping them silently. Other read errors keep proceeding as before.
+    if (err instanceof Error && err.message.startsWith("File exceeds")) {
+      log.warn(`heartbeat: skipping oversized ${DEFAULT_HEARTBEAT_FILENAME}: ${err.message}`);
     }
     // For other read errors, proceed with heartbeat as before.
   }
@@ -1296,6 +1221,9 @@ export async function runHeartbeatOnce(opts: {
   intent?: HeartbeatWakeIntent;
   reason?: string;
   runScope?: HeartbeatRunScope;
+  /** Exact cron run marker whose own activity must not block this wake. */
+  owningCronJobMarker?: CronActiveJobMarker;
+  owningCronLaneTaskMarker?: CommandLaneTaskMarker;
   deps?: HeartbeatDeps;
 }): Promise<HeartbeatRunResult> {
   const cfg = opts.cfg ?? getRuntimeConfig();
@@ -1305,12 +1233,13 @@ export async function runHeartbeatOnce(opts: {
   const agentId = normalizeAgentId(
     explicitAgentId || forcedSessionAgentId || resolveDefaultAgentId(cfg),
   );
+  const wakeSource = opts.source ?? inferHeartbeatWakeSourceFromReason(opts.reason);
   const heartbeat = resolveHeartbeatForWake({
     cfg,
     agentId,
     requestedHeartbeat: opts.heartbeat,
-    source: opts.source,
-    mergeRequestedHeartbeat: opts.source === "cron",
+    source: wakeSource,
+    mergeRequestedHeartbeat: wakeSource === "cron",
   });
   const runScope = opts.runScope ?? "global";
   const allowsUnscheduledTarget =
@@ -1326,32 +1255,45 @@ export async function runHeartbeatOnce(opts: {
   }
 
   const startedAt = opts.deps?.nowMs?.() ?? Date.now();
-  if (!allowsUnscheduledTarget && !isWithinActiveHours(cfg, heartbeat, startedAt)) {
+  // Cron uses the heartbeat runner as execution transport; heartbeat scheduling windows do not own it.
+  if (
+    !allowsUnscheduledTarget &&
+    wakeSource !== "cron" &&
+    !isWithinActiveHours(cfg, heartbeat, startedAt)
+  ) {
     return { status: "skipped", reason: "quiet-hours" };
   }
 
   const getSize = opts.deps?.getQueueSize ?? getQueueSize;
-  const getSnapshots = opts.deps?.getCommandLaneSnapshots ?? getCommandLaneSnapshots;
   if (getSize(CommandLane.Main) > 0) {
     return { status: "skipped", reason: HEARTBEAT_SKIP_REQUESTS_IN_FLIGHT };
   }
 
-  if (hasActiveCronJobs() || hasQueuedWorkInLanes(HEARTBEAT_ALWAYS_BUSY_LANES, getSize)) {
+  // Ignore only the exact Cron lane task that owns this wake. Other queued or active
+  // Cron work and all CronNested work remain busy signals.
+  const owningCronJobMarker = opts.owningCronJobMarker;
+  const ownsActiveCronRun = owningCronJobMarker
+    ? isCronActiveJobMarkerCurrent(owningCronJobMarker)
+    : false;
+  const cronBusy =
+    ownsActiveCronRun && owningCronJobMarker
+      ? hasActiveCronJobsExceptMarker(owningCronJobMarker)
+      : hasActiveCronJobs();
+  const owningCronLaneTaskMarker = opts.owningCronLaneTaskMarker;
+  const ownsCronLaneTask =
+    ownsActiveCronRun &&
+    owningCronLaneTaskMarker?.lane === CommandLane.Cron &&
+    isCommandLaneTaskMarkerCurrent(owningCronLaneTaskMarker);
+  const cronLaneDepth = getSize(CommandLane.Cron);
+  const cronLaneBusy =
+    cronLaneDepth > (ownsCronLaneTask ? 1 : 0) || getSize(CommandLane.CronNested) > 0;
+  if (cronBusy || cronLaneBusy) {
     emitHeartbeatEvent({
       status: "skipped",
       reason: HEARTBEAT_SKIP_CRON_IN_PROGRESS,
       durationMs: Date.now() - startedAt,
     });
     return { status: "skipped", reason: HEARTBEAT_SKIP_CRON_IN_PROGRESS };
-  }
-
-  if (heartbeat?.skipWhenBusy === true && hasAgentOptInBusyLaneWork(agentId, getSnapshots)) {
-    emitHeartbeatEvent({
-      status: "skipped",
-      reason: HEARTBEAT_SKIP_LANES_BUSY,
-      durationMs: Date.now() - startedAt,
-    });
-    return { status: "skipped", reason: HEARTBEAT_SKIP_LANES_BUSY };
   }
 
   const shouldHonorActiveReplyRuns = opts.intent !== "immediate" && opts.intent !== "manual";
@@ -1408,7 +1350,7 @@ export async function runHeartbeatOnce(opts: {
     heartbeat,
     runScope,
     forcedSessionKey: opts.sessionKey,
-    source: opts.source,
+    source: wakeSource,
     reason: opts.reason,
     nowMs: startedAt,
   });
@@ -1809,13 +1751,14 @@ export async function runHeartbeatOnce(opts: {
   const hasChatDelivery = Boolean(
     delivery.channel !== "none" && delivery.to && (visibility.showAlerts || visibility.showOk),
   );
-  const heartbeatTypingIntervalSeconds = resolveHeartbeatTypingIntervalSeconds(cfg);
+  const heartbeatTypingIntervalSeconds = resolveHeartbeatTypingIntervalSeconds(cfg, agentId);
   const heartbeatChannelPlugin =
     delivery.channel !== "none" ? resolveHeartbeatChannelPlugin(delivery.channel) : undefined;
   const heartbeatTyping =
     delivery.channel !== "none" &&
     isHeartbeatTypingEnabled({
       cfg,
+      agentId,
       hasChatDelivery,
     })
       ? createHeartbeatTypingCallbacks({
@@ -1874,7 +1817,7 @@ export async function runHeartbeatOnce(opts: {
   try {
     await heartbeatTyping?.onReplyStart();
     const heartbeatModelOverride = normalizeOptionalString(heartbeat?.model);
-    const suppressToolErrorWarnings = heartbeat?.suppressToolErrorWarnings === true;
+    const suppressToolErrorWarnings = false;
     const timeoutOverrideSeconds = resolveHeartbeatTimeoutOverrideSeconds(cfg, heartbeat);
     const bootstrapContextMode: "lightweight" | undefined =
       heartbeat?.lightContext === true ? "lightweight" : undefined;
@@ -1914,14 +1857,21 @@ export async function runHeartbeatOnce(opts: {
       });
       return { status: "skipped", reason: HEARTBEAT_SKIP_REQUESTS_IN_FLIGHT };
     }
-    const includeReasoning = heartbeat?.includeReasoning === true;
-    const reasoningPayloads = includeReasoning
-      ? resolveHeartbeatReasoningPayloads(replyResult).filter((payload) => payload !== replyPayload)
-      : [];
+    const reasoningPayloads: ReplyPayload[] = [];
     const ackMaxChars = resolveHeartbeatAckMaxChars(cfg, heartbeat);
     const responsePrefix = resolveHeartbeatResponsePrefix();
 
     if (heartbeatToolResponse && !heartbeatToolResponse.notify && !heartbeatTerminalToolFailure) {
+      persistHeartbeatOutcome({
+        agentId,
+        sessionKey,
+        runSessionKey,
+        response: heartbeatToolResponse,
+        taskNames: dueHeartbeatTasks.map((task) => task.name),
+        wakeSource,
+        wakeReason: opts.reason,
+        occurredAt: startedAt,
+      });
       await restoreHeartbeatUpdatedAt({
         storePath,
         sessionKey,

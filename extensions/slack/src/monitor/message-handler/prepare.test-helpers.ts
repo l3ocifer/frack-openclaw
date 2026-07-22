@@ -46,7 +46,7 @@ export function createInboundSlackTestContext(params: {
     defaultRequireMention: params.defaultRequireMention ?? true,
     channelsConfig: params.channelsConfig,
     groupPolicy: "open",
-    useAccessGroups: false,
+    useAccessGroups: true,
     reactionMode: "off",
     reactionAllowlist: [],
     replyToMode: params.replyToMode ?? "off",
@@ -72,6 +72,7 @@ export function createSlackTestAccount(
   return {
     accountId: "default",
     enabled: true,
+    identity: "bot",
     botTokenSource: "config",
     appTokenSource: "config",
     userTokenSource: "none",

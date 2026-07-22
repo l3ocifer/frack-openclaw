@@ -72,6 +72,13 @@ import {
 import { loadGatewaySessionRow } from "./server-chat.load-gateway-session-row.runtime.js";
 import { loadSessionEntry } from "./session-utils.js";
 
+function waitForFast<T>(
+  callback: () => T | Promise<T>,
+  options: { timeout?: number; interval?: number } = {},
+) {
+  return vi.waitFor(callback, { interval: 1, ...options });
+}
+
 describe("agent event handler", () => {
   beforeEach(() => {
     resetAgentEventsForTest({ preserveListeners: true });
@@ -223,6 +230,62 @@ describe("agent event handler", () => {
       clientRunId: "client-run",
       summary: "edit tool validation failed: edits: must be an array",
     });
+  });
+
+  it("records, replaces, dismisses, and clears normalized plan snapshots", () => {
+    const { chatRunState, handler } = createHarness();
+    chatRunState.registry.add("provider-run", {
+      sessionKey: "session-1",
+      clientRunId: "client-run",
+    });
+
+    handler({
+      runId: "provider-run",
+      seq: 1,
+      stream: "plan",
+      ts: 1_000,
+      data: {
+        phase: "update",
+        explanation: "  Initial plan  ",
+        steps: ["Legacy step", { step: "Active step", status: "in_progress" }],
+      },
+    });
+    expect(chatRunState.planSnapshots.get("client-run")).toEqual({
+      explanation: "Initial plan",
+      steps: [
+        { step: "Legacy step", status: "pending" },
+        { step: "Active step", status: "in_progress" },
+      ],
+    });
+
+    handler({
+      runId: "provider-run",
+      seq: 2,
+      stream: "plan",
+      ts: 1_100,
+      data: {
+        phase: "update",
+        steps: [{ step: "Replacement", status: "completed" }],
+      },
+    });
+    expect(chatRunState.planSnapshots.get("client-run")).toEqual({
+      steps: [{ step: "Replacement", status: "completed" }],
+    });
+
+    handler({
+      runId: "provider-run",
+      seq: 3,
+      stream: "plan",
+      ts: 1_200,
+      data: { phase: "update", steps: [] },
+    });
+    expect(chatRunState.planSnapshots.get("client-run")).toEqual({ steps: [] });
+
+    chatRunState.planSnapshots.set("client-run", {
+      steps: [{ step: "Temporary", status: "pending" }],
+    });
+    chatRunState.clearRun("client-run");
+    expect(chatRunState.planSnapshots.has("client-run")).toBe(false);
   });
 
   it.each([
@@ -631,6 +694,40 @@ describe("agent event handler", () => {
       { dropIfSlow: true },
     );
     nowSpy?.mockRestore();
+  });
+
+  it("projects typed run startup status onto the active chat stream", () => {
+    const { broadcast, nodeSendToSession, chatRunState, handler } = createHarness();
+    chatRunState.registry.add("run-startup", {
+      sessionKey: "session-startup",
+      clientRunId: "client-startup",
+      agentId: "main",
+    });
+
+    handler({
+      runId: "run-startup",
+      seq: 1,
+      stream: "run_status",
+      ts: Date.now(),
+      data: { phase: "preparing_context" },
+    });
+
+    expect(chatBroadcastCalls(broadcast)).toEqual([
+      [
+        "chat",
+        {
+          runId: "client-startup",
+          sessionKey: "session-startup",
+          agentId: "main",
+          seq: 1,
+          state: "status",
+          phase: "preparing_context",
+        },
+        { dropIfSlow: true, sessionKeys: ["session-startup"] },
+      ],
+    ]);
+    expect(sessionChatCalls(nodeSendToSession)).toHaveLength(1);
+    expect(agentBroadcastCalls(broadcast)).toHaveLength(1);
   });
 
   it("coalesces assistant agent events under the chat delta throttle", () => {
@@ -2036,6 +2133,9 @@ describe("agent event handler", () => {
     expect(requireMockArg(broadcastToConnIds, 0, 2, "run tool recipients")).toEqual(
       new Set(["conn-run"]),
     );
+    expect(requireMockArg(broadcastToConnIds, 0, 3, "run tool options")).toEqual({
+      sessionKeys: ["session-1"],
+    });
   });
 
   it("projects tool-search bridge calls like native channel verbose tool events", () => {
@@ -2201,7 +2301,7 @@ describe("agent event handler", () => {
       },
     });
 
-    await vi.waitFor(() => {
+    await waitForFast(() => {
       expect(
         broadcastToConnIds.mock.calls.filter(([event]) => event === "sessions.changed"),
       ).toHaveLength(2);
@@ -2290,7 +2390,7 @@ describe("agent event handler", () => {
       },
     });
 
-    await vi.waitFor(() => {
+    await waitForFast(() => {
       expect(
         broadcastToConnIds.mock.calls.filter(([event]) => event === "sessions.changed"),
       ).toHaveLength(2);
@@ -2456,7 +2556,7 @@ describe("agent event handler", () => {
       observedAt: 2_100,
       persistence: expect.any(Promise),
     });
-    await vi.waitFor(() => {
+    await waitForFast(() => {
       expect(markTrackedRunTerminalPersisted).toHaveBeenCalledWith({
         runId: "completed-during-marker-write",
         clientRunId: "completed-during-marker-write",
@@ -2529,7 +2629,7 @@ describe("agent event handler", () => {
       },
     });
 
-    await vi.waitFor(() => {
+    await waitForFast(() => {
       expect(
         broadcastToConnIds.mock.calls.filter(([event]) => event === "sessions.changed"),
       ).toHaveLength(1);
@@ -2620,7 +2720,7 @@ describe("agent event handler", () => {
 
     currentRow = { ...currentRow, updatedAt: 2_101 };
     resolveRunA?.();
-    await vi.waitFor(() => {
+    await waitForFast(() => {
       expect(
         broadcastToConnIds.mock.calls.filter(([event]) => event === "sessions.changed"),
       ).toHaveLength(1);
@@ -2637,7 +2737,7 @@ describe("agent event handler", () => {
       abortedLastRun: false,
     };
     resolveRunB?.();
-    await vi.waitFor(() => {
+    await waitForFast(() => {
       expect(
         broadcastToConnIds.mock.calls.filter(([event]) => event === "sessions.changed"),
       ).toHaveLength(2);
@@ -2709,7 +2809,7 @@ describe("agent event handler", () => {
     };
     resolvePersistence?.();
 
-    await vi.waitFor(() => {
+    await waitForFast(() => {
       expect(
         broadcastToConnIds.mock.calls.filter(([event]) => event === "sessions.changed"),
       ).toHaveLength(1);
@@ -2754,7 +2854,7 @@ describe("agent event handler", () => {
       },
     });
 
-    await vi.waitFor(() => {
+    await waitForFast(() => {
       expect(
         broadcastToConnIds.mock.calls.filter(([event]) => event === "sessions.changed"),
       ).toHaveLength(1);
@@ -2979,7 +3079,7 @@ describe("agent event handler", () => {
       clientRunId: "client-run",
       sessionKey: "session-finished",
     });
-    await vi.waitFor(() => {
+    await waitForFast(() => {
       expect(
         broadcastToConnIds.mock.calls.filter(([event]) => event === "sessions.changed"),
       ).toHaveLength(1);
@@ -3169,17 +3269,17 @@ describe("agent event handler", () => {
       },
     });
 
-    expect(
-      expectDefined(
-        chatBroadcastCalls(broadcast)[0],
-        "chatBroadcastCalls(broadcast)[0] test invariant",
-      )[1],
-    ).toMatchObject({
+    const payload = expectDefined(
+      chatBroadcastCalls(broadcast)[0],
+      "chatBroadcastCalls(broadcast)[0] test invariant",
+    )[1] as Record<string, unknown>;
+    expect(payload).toMatchObject({
       runId: "client-timeout",
       state: "error",
       stopReason: "timeout",
       errorMessage: "agent provider timeout",
     });
+    expect(payload).not.toHaveProperty("message");
   });
 
   it.each([
@@ -3305,7 +3405,7 @@ describe("agent event handler", () => {
       },
     });
 
-    await vi.waitFor(() => {
+    await waitForFast(() => {
       expect(
         broadcastToConnIds.mock.calls.filter(([event]) => event === "sessions.changed"),
       ).toHaveLength(1);
@@ -3373,7 +3473,7 @@ describe("agent event handler", () => {
       data: { phase: "end", endedAt: 1_700 },
     });
 
-    await vi.waitFor(() => {
+    await waitForFast(() => {
       expect(
         broadcastToConnIds.mock.calls.filter(([event]) => event === "sessions.changed"),
       ).toHaveLength(1);
@@ -3569,7 +3669,7 @@ describe("agent event handler", () => {
       data: { phase: "start" },
     });
 
-    await vi.waitFor(() => {
+    await waitForFast(() => {
       expect(logErrorMock).toHaveBeenCalledTimes(1);
     });
     expect(logErrorMock).toHaveBeenCalledWith(
@@ -4060,20 +4160,17 @@ describe("agent event handler", () => {
       state?: string;
       errorKind?: string;
       errorMessage?: string;
-      message?: { role?: string; content?: Array<{ type?: string; text?: string }> };
     };
     expect(payload.state).toBe("error");
     expect(payload.errorKind).toBe("rate_limit");
     expect(payload.errorMessage).toContain("Too many requests");
-    expect(payload.message?.role).toBe("assistant");
-    expect(payload.message?.content?.[0]?.text).toContain("Too many requests");
+    expect(payload).not.toHaveProperty("message");
 
     const nodePayload = sessionChatCalls(nodeSendToSession).at(-1)?.[2] as {
       errorKind?: string;
-      message?: { role?: string; content?: Array<{ type?: string; text?: string }> };
     };
     expect(nodePayload.errorKind).toBe("rate_limit");
-    expect(nodePayload.message?.content?.[0]?.text).toContain("Too many requests");
+    expect(nodePayload).not.toHaveProperty("message");
   });
 
   it("suppresses delayed lifecycle chat errors for active chat.send runs while still cleaning up", () => {
@@ -4138,12 +4235,14 @@ describe("agent event handler", () => {
       ([, payload]) => (payload as { state?: string }).state === "error",
     );
     expect(chatErrors).toHaveLength(1);
-    expectPayloadFields(chatErrors[0]?.[1], {
+    const errorPayload = chatErrors[0]?.[1] as Record<string, unknown>;
+    expectPayloadFields(errorPayload, {
       runId: "run-chat-send",
       sessionKey: "session-chat-send",
       state: "error",
       errorMessage: "chat.send failed",
     });
+    expect(errorPayload).not.toHaveProperty("message");
     expect(chatRunState.registry.peek("run-chat-send")).toBeUndefined();
     expect(clearAgentRunContext).toHaveBeenCalledWith("run-chat-send");
     expect(agentRunSeq.has("run-chat-send")).toBe(false);
@@ -4478,7 +4577,7 @@ describe("agent event handler", () => {
     expect(payload.sessionKey).toBe("session-from-event");
   });
 
-  it("remaps chat-linked tool runId for non-full verbose payloads", () => {
+  it("remaps chat-linked tool-start runId to the client run before UI delivery", () => {
     const { broadcastToConnIds, chatRunState, toolEventRecipients, handler } = createHarness({
       resolveSessionKeyForRun: () => "session-tool-remap",
     });
@@ -4499,10 +4598,10 @@ describe("agent event handler", () => {
       stream: "tool",
       ts: Date.now(),
       data: {
-        phase: "result",
+        phase: "start",
         name: "exec",
         toolCallId: "tool-remap-1",
-        result: { content: [{ type: "text", text: "secret" }] },
+        args: { command: "true" },
       },
     });
 
@@ -4549,7 +4648,7 @@ describe("agent event handler", () => {
 
   it("keeps heartbeat alert text in final chat output when remainder exceeds ackMaxChars", () => {
     vi.mocked(getRuntimeConfig).mockReturnValue({
-      agents: { defaults: { heartbeat: { ackMaxChars: 10 } } },
+      agents: { defaults: { heartbeat: {} } },
     });
 
     const { broadcast, chatRunState, handler } = createHarness({ now: 3_000 });
@@ -4563,13 +4662,14 @@ describe("agent event handler", () => {
       verboseLevel: "off",
     });
 
+    const alert = `Disk usage crossed 95 percent on /data. ${"Cleanup required. ".repeat(20)}`;
     handler({
       runId: "run-heartbeat-alert",
       seq: 1,
       stream: "assistant",
       ts: Date.now(),
       data: {
-        text: "HEARTBEAT_OK Disk usage crossed 95 percent on /data and needs cleanup now.",
+        text: `HEARTBEAT_OK ${alert}`,
       },
     });
 
@@ -4578,9 +4678,7 @@ describe("agent event handler", () => {
     const payload = expectSingleFinalChatPayload(broadcast) as {
       message?: { content?: Array<{ text?: string }> };
     };
-    expect(payload.message?.content?.[0]?.text).toBe(
-      "Disk usage crossed 95 percent on /data and needs cleanup now.",
-    );
+    expect(payload.message?.content?.[0]?.text).toBe(alert.trim());
   });
 
   describe("spawnedBy enrichment in chat and agent broadcasts", () => {

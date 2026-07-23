@@ -4,7 +4,7 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { createOpenClawCodingTools } from "openclaw/plugin-sdk/agent-harness";
 import type {
   RealtimeVoiceAgentControlResult,
-  RealtimeVoiceForcedConsultCoordinator,
+  RealtimeVoiceSessionHarness,
 } from "openclaw/plugin-sdk/realtime-voice";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChannelType } from "../internal/discord.js";
@@ -264,6 +264,26 @@ vi.mock("openclaw/plugin-sdk/realtime-voice", async () => {
   return {
     ...actual,
     createRealtimeVoiceBridgeSession: createRealtimeVoiceBridgeSessionMock,
+    createRealtimeVoiceSessionHarness: (
+      params: Parameters<typeof actual.createRealtimeVoiceSessionHarness>[0],
+    ) => {
+      const harness = actual.createRealtimeVoiceSessionHarness(params);
+      return {
+        ...harness,
+        createBridge: (bridgeParams: Parameters<typeof harness.createBridge>[0]) =>
+          createRealtimeVoiceBridgeSessionMock(bridgeParams),
+        flushOutput: (flush: () => void) => flush(),
+        handleBargeIn: (
+          options: Parameters<typeof harness.handleBargeIn>[0],
+          fallbackFlush: () => void,
+        ) => {
+          realtimeSessionMock.handleBargeIn(options);
+          // The mock provider never clears audio, so exercise the harness fallback directly.
+          // Discord passes a no-op for normal truncation and a real clear for forced paths.
+          fallbackFlush();
+        },
+      };
+    },
     controlRealtimeVoiceAgentRun: controlRealtimeVoiceAgentRunMock,
     resolveConfiguredRealtimeVoiceProvider: resolveConfiguredRealtimeVoiceProviderMock,
   };
@@ -5084,14 +5104,14 @@ describe("DiscordVoiceManager", () => {
       realtime?: unknown;
     };
     const realtime = entry.realtime as {
-      forcedConsults: RealtimeVoiceForcedConsultCoordinator;
+      harness: RealtimeVoiceSessionHarness;
     };
-    const cancelled = realtime.forcedConsults.prepare("cancelled question");
+    const cancelled = realtime.harness.forcedConsults.prepare("cancelled question");
     if (!cancelled) {
       throw new Error("expected forced consult handle");
     }
-    realtime.forcedConsults.markStarted(cancelled);
-    realtime.forcedConsults.markCancelled(cancelled);
+    realtime.harness.forcedConsults.markStarted(cancelled);
+    realtime.harness.forcedConsults.markCancelled(cancelled);
     const bridgeParams = lastRealtimeBridgeParams() as
       | {
           onToolCall?: (
@@ -5517,7 +5537,7 @@ describe("DiscordVoiceManager", () => {
         realtime: {
           provider: "openai",
           model: "gpt-realtime-2",
-          voice: "cedar",
+          speakerVoice: "cedar",
           toolPolicy: "safe-read-only",
           consultPolicy: "always",
           requireWakeName: true,
@@ -6487,9 +6507,11 @@ describe("DiscordVoiceManager", () => {
         discriminator: "4321",
       },
     });
-    const manager = createManager({ groupPolicy: "open", allowFrom: ["discord:u-owner"] }, client, {
-      commands: { useAccessGroups: false },
-    });
+    const manager = createManager(
+      { groupPolicy: "open", allowFrom: ["discord:u-owner"] },
+      client,
+      {},
+    );
     await processVoiceSegment(manager, "u-guest");
   });
 
@@ -6587,9 +6609,7 @@ describe("DiscordVoiceManager", () => {
         },
       },
       client,
-      {
-        commands: { useAccessGroups: false },
-      },
+      {},
     );
     await processVoiceSegment(manager, "u-guest");
 
@@ -6616,9 +6636,7 @@ describe("DiscordVoiceManager", () => {
         discriminator: "4321",
       },
     });
-    const manager = createManager({ groupPolicy: "open" }, client, {
-      commands: { useAccessGroups: false },
-    });
+    const manager = createManager({ groupPolicy: "open" }, client, {});
     await processVoiceSegment(manager, "u-guest");
 
     const commandArgs = lastAgentCommandArgs() as
@@ -6650,9 +6668,7 @@ describe("DiscordVoiceManager", () => {
         discriminator: "0001",
       },
     });
-    const manager = createManager({ groupPolicy: "open" }, client, {
-      commands: { useAccessGroups: false },
-    });
+    const manager = createManager({ groupPolicy: "open" }, client, {});
 
     await processVoiceSegment(manager, "u-debug");
 
@@ -6690,9 +6706,7 @@ describe("DiscordVoiceManager", () => {
         discriminator: "4321",
       },
     });
-    const manager = createManager({ groupPolicy: "open" }, client, {
-      commands: { useAccessGroups: false },
-    });
+    const manager = createManager({ groupPolicy: "open" }, client, {});
     await processVoiceSegment(manager, "u-guest");
 
     expect(lastTtsStreamArgs().channel).toBe("discord");
@@ -6734,9 +6748,7 @@ describe("DiscordVoiceManager", () => {
         },
       },
       client,
-      {
-        commands: { useAccessGroups: false },
-      },
+      {},
     );
     await processVoiceSegment(manager, "u-guest");
 
@@ -6808,7 +6820,7 @@ describe("DiscordVoiceManager", () => {
         },
       },
       client,
-      { commands: { useAccessGroups: false } },
+      {},
     );
     manager.setBotUserId("bot-user");
 

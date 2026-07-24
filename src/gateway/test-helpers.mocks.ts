@@ -10,7 +10,6 @@ import {
   type GetReplyFromConfigFn,
   getGatewayTestHoistedState,
   agentDiscoveryMock,
-  sessionStoreSaveDelayMs,
   testTailnetIPv4,
   testTailscaleWhois,
   type RunBtwSideQuestionFn,
@@ -171,23 +170,6 @@ vi.mock("../infra/tailscale.js", async () => {
   };
 });
 
-vi.mock("../config/sessions.js", async () => {
-  const actual =
-    await vi.importActual<typeof import("../config/sessions.js")>("../config/sessions.js");
-  return {
-    ...actual,
-    saveSessionStore: vi.fn(async (storePath: string, store: unknown) => {
-      const delay = sessionStoreSaveDelayMs.value;
-      if (delay > 0) {
-        await new Promise((resolve) => {
-          setTimeout(resolve, delay);
-        });
-      }
-      return actual.saveSessionStore(storePath, store as never);
-    }),
-  };
-});
-
 vi.mock("../config/config.js", async () => {
   const actual = await vi.importActual<typeof import("../config/config.js")>("../config/config.js");
   const { createGatewayConfigModuleMock } = await import("./test-helpers.config-runtime.js");
@@ -251,6 +233,7 @@ vi.mock("../commands/status.js", () => ({
 }));
 vi.mock("../commands/agent.js", () => ({
   agentCommand,
+  agentCommandFromGatewayIngress: agentCommand,
   agentCommandFromIngress: agentCommand,
 }));
 vi.mock("../agents/btw.js", () => ({

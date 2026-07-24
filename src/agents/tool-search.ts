@@ -1,8 +1,4 @@
-/**
- * Tool Search catalog compaction.
- *
- * Presents large OpenClaw/MCP/client tool inventories through search, describe, call, and optional code-mode tools.
- */
+/** Tool Search catalog compaction for large OpenClaw, MCP, and client tool inventories. */
 import { spawn } from "node:child_process";
 import os from "node:os";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
@@ -13,10 +9,11 @@ import {
   uniqueValues,
 } from "@openclaw/normalization-core/string-normalization";
 import { sliceUtf16Safe, truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
-import { Type } from "typebox";
+import { Type, type TSchema } from "typebox";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { getPluginToolMeta, type PluginToolMcpMeta } from "../plugins/tools.js";
 import {
+  isPreExecutionBlockedToolResult,
   isToolWrappedWithBeforeToolCallHook,
   rewrapToolWithBeforeToolCallHook,
   type HookContext,
@@ -27,6 +24,8 @@ import type { AgentMessage, AgentToolResult, AgentToolUpdateCallback } from "./r
 import type { ToolDefinition } from "./sessions/index.js";
 import { appendBoundedTextTail, SESSION_TOOL_STDERR_TAIL_BYTES } from "./sessions/tools/limits.js";
 import { isAgentToolReplaySafe } from "./tool-replay-safety.js";
+import { compactToolInputHint, compactToolOutputHint } from "./tool-schema-hints.js";
+import { TOOL_SEARCH_CODE_MODE_CHILD_SOURCE } from "./tool-search-code-mode-child.js";
 import { asToolParamsRecord, jsonResult, ToolInputError } from "./tools/common.js";
 import type { AnyAgentTool } from "./tools/common.js";
 
@@ -53,10 +52,6 @@ const DEFAULT_SEARCH_LIMIT = 8;
 const DEFAULT_MAX_SEARCH_LIMIT = 20;
 const MAX_REUSABLE_CATALOG_SNAPSHOTS = 256;
 const MAX_TOOL_SCHEMA_DIRECTORY_PROMPT_CHARS = 18_000;
-const MAX_COMPACT_INPUT_HINT_CHARS = 300;
-const MAX_COMPACT_INPUT_PROPERTIES = 16;
-const MAX_COMPACT_SCHEMA_DEPTH = 4;
-const MAX_COMPACT_UNION_TYPES = 4;
 const TOOL_DIRECTORY_IDENTIFIER_RE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u;
 
 type ToolSearchMode = "code" | "tools" | "directory";
@@ -92,6 +87,9 @@ export type ToolSearchCatalogToolExecutor = (params: {
   input: unknown;
   signal?: AbortSignal;
   onUpdate?: AgentToolUpdateCallback;
+  acceptResultBeforeProjection: (
+    result: AgentToolResult<unknown>,
+  ) => Promise<AgentToolResult<unknown>>;
 }) => Promise<AgentToolResult<unknown>>;
 
 /** Transcript projection for target tool calls made through Tool Search. */
@@ -138,6 +136,7 @@ export type ToolSearchCatalogEntry = {
   label?: string;
   description: string;
   parameters?: unknown;
+  outputSchema?: TSchema;
   tool: CatalogTool;
 };
 
@@ -174,255 +173,6 @@ type CodeModeChildMessage =
 
 type CodeModeBridgeResultMessage = { type: "bridge-result"; id: string } & Result<unknown, string>;
 
-const TOOL_SEARCH_CODE_MODE_CHILD_SOURCE = String.raw`
-import vm from "node:vm";
-
-let activeController;
-
-function send(message) {
-  if (typeof process.send === "function" && process.connected) {
-    process.send(message);
-  }
-}
-
-function sendAndFlush(message) {
-  return new Promise((resolve) => {
-    if (typeof process.send !== "function" || !process.connected) {
-      resolve();
-      return;
-    }
-    try {
-      process.send(message, () => resolve());
-    } catch {
-      resolve();
-    }
-  });
-}
-
-function toJsonSafe(value) {
-  if (value === undefined) {
-    return null;
-  }
-  try {
-    return JSON.parse(JSON.stringify(value));
-  } catch {
-    if (value instanceof Error) {
-      return value.message;
-    }
-    if (value === null) {
-      return null;
-    }
-    switch (typeof value) {
-      case "string":
-        return value;
-      case "number":
-      case "boolean":
-      case "bigint":
-      case "symbol":
-      case "function":
-        return String(value);
-      default:
-        return Object.prototype.toString.call(value);
-    }
-  }
-}
-
-function formatLogItem(value) {
-  if (typeof value === "string") {
-    return value;
-  }
-  const safe = toJsonSafe(value);
-  return typeof safe === "string" ? safe : JSON.stringify(safe);
-}
-
-function bridgeResultPayload(message) {
-  if (!message.ok) {
-    return typeof message.error === "string" ? message.error : "tool bridge failed";
-  }
-  const json = JSON.stringify(toJsonSafe(message.value));
-  return typeof json === "string" ? json : "null";
-}
-
-function settleBridge(message) {
-  if (!activeController) {
-    return;
-  }
-  const id = typeof message?.id === "string" ? message.id : "";
-  try {
-    activeController.settleBridge(id, Boolean(message.ok), bridgeResultPayload(message));
-  } catch (error) {
-    send({
-      type: "result",
-      ok: false,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-}
-
-function buildModelScriptSource(code) {
-  return "(async (openclaw, console) => {\n" + code + "\n})(openclaw, console)";
-}
-
-function buildControllerSource() {
-  // The controller returns promise-like bridge handles. The model code can await
-  // them naturally, while the parent process serializes real tool calls.
-  return (
-    '"use strict";\n' +
-    "(() => {\n" +
-    "const pending = new Map();\n" +
-    "const bridgeMessages = [];\n" +
-    "const logs = [];\n" +
-    "let idleWaiters = [];\n" +
-    "let nextBridgeId = 1;\n" +
-    toJsonSafe.toString() +
-    "\n" +
-    formatLogItem.toString() +
-    "\n" +
-    "function notifyBridgeIdle() {\n" +
-    "  if (pending.size !== 0 || bridgeMessages.length !== 0) return;\n" +
-    "  const waiters = idleWaiters;\n" +
-    "  idleWaiters = [];\n" +
-    "  for (const resolve of waiters) resolve();\n" +
-    "}\n" +
-    "function isBridgeIdle() {\n" +
-    "  return pending.size === 0 && bridgeMessages.length === 0;\n" +
-    "}\n" +
-    "function waitForBridgeIdle() {\n" +
-    "  if (isBridgeIdle()) return Promise.resolve();\n" +
-    "  return new Promise((resolve) => idleWaiters.push(resolve));\n" +
-    "}\n" +
-    "function bridge(method, args) {\n" +
-    "  let promise;\n" +
-    "  const start = () => {\n" +
-    "    if (!promise) {\n" +
-    "      const id = String(nextBridgeId++);\n" +
-    "      promise = new Promise((resolve, reject) => {\n" +
-    "        pending.set(id, { resolve, reject });\n" +
-    "        bridgeMessages.push({ id, method, args: toJsonSafe(args) });\n" +
-    "      });\n" +
-    "    }\n" +
-    "    return promise;\n" +
-    "  };\n" +
-    "  return Object.freeze({\n" +
-    "    then: (resolve, reject) => start().then(resolve, reject),\n" +
-    "    catch: (reject) => start().catch(reject),\n" +
-    "    finally: (onFinally) => start().finally(onFinally),\n" +
-    "  });\n" +
-    "}\n" +
-    "const console = Object.freeze({\n" +
-    "  log: (...items) => logs.push(items.map(formatLogItem)),\n" +
-    "  warn: (...items) => logs.push(items.map(formatLogItem)),\n" +
-    "  error: (...items) => logs.push(items.map(formatLogItem)),\n" +
-    "});\n" +
-    "const openclaw = Object.freeze({\n" +
-    "  tools: Object.freeze({\n" +
-    "    search: (query, options) => bridge('search', [query, options]),\n" +
-    "    describe: (id) => bridge('describe', [id]),\n" +
-    "    call: (id, input) => bridge('call', [id, input]),\n" +
-    "  }),\n" +
-    "});\n" +
-    "return Object.freeze({\n" +
-    "  openclaw,\n" +
-    "  console,\n" +
-    "  isBridgeIdle,\n" +
-    "  waitForBridgeIdle,\n" +
-    "  takeLogs: () => logs.splice(0),\n" +
-    "  takeBridgeMessages: () => bridgeMessages.splice(0),\n" +
-    "  settleBridge: (id, ok, payload) => {\n" +
-    "    const waiter = pending.get(String(id));\n" +
-    "    if (!waiter) return;\n" +
-    "    pending.delete(String(id));\n" +
-    "    if (ok) {\n" +
-    "      waiter.resolve(JSON.parse(String(payload)));\n" +
-    "    } else {\n" +
-    "      waiter.reject(new Error(String(payload)));\n" +
-    "    }\n" +
-    "    Promise.resolve().then(notifyBridgeIdle);\n" +
-    "  },\n" +
-    "});\n" +
-    "})()"
-  );
-}
-
-function pumpController(controller) {
-  for (const items of controller.takeLogs()) {
-    send({ type: "log", items });
-  }
-  for (const message of controller.takeBridgeMessages()) {
-    send({ type: "bridge", id: message.id, method: message.method, args: message.args });
-  }
-}
-
-async function runModelCode(code, timeoutMs) {
-  const sandbox = Object.create(null);
-  const context = vm.createContext(sandbox, {
-    name: "tool_search_code",
-    codeGeneration: { strings: false, wasm: false },
-  });
-  const controllerScript = new vm.Script(buildControllerSource(), {
-    filename: "tool_search_code:controller.js",
-  });
-  const controller = controllerScript.runInContext(context, {
-    timeout: Math.max(1, Math.min(Number(timeoutMs) || 1, 2147483647)),
-    breakOnSigint: false,
-  });
-  Object.defineProperties(sandbox, {
-    console: { value: controller.console, enumerable: true },
-    openclaw: { value: controller.openclaw, enumerable: true },
-  });
-  activeController = controller;
-  const pumpTimer = setInterval(() => pumpController(controller), 1);
-  try {
-    const modelScript = new vm.Script(buildModelScriptSource(code), {
-      filename: "tool_search_code:model.js",
-    });
-    const result = await Promise.resolve(
-      modelScript.runInContext(context, {
-        timeout: Math.max(1, Math.min(Number(timeoutMs) || 1, 2147483647)),
-        breakOnSigint: false,
-      }),
-    ).then(
-      (value) => ({ ok: true, value: toJsonSafe(value) }),
-      (error) => ({ ok: false, error: error instanceof Error ? error.message : String(error) }),
-    );
-    do {
-      pumpController(controller);
-      await controller.waitForBridgeIdle();
-      pumpController(controller);
-    } while (!controller.isBridgeIdle());
-    pumpController(controller);
-    await sendAndFlush(
-      result.ok
-        ? { type: "result", ok: true, value: result.value }
-        : { type: "result", ok: false, error: result.error },
-    );
-  } finally {
-    clearInterval(pumpTimer);
-    activeController = undefined;
-  }
-}
-
-process.on("message", (message) => {
-  if (message?.type === "bridge-result") {
-    settleBridge(message);
-    return;
-  }
-  if (message?.type !== "run") {
-    return;
-  }
-  const code = typeof message.code === "string" ? message.code : "";
-  runModelCode(code, message.timeoutMs).catch((error) => {
-    return sendAndFlush({
-      type: "result",
-      ok: false,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }).finally(() => {
-    setTimeout(() => process.exit(0), 100);
-  });
-});
-`;
-
 const SESSION_CATALOGS_KEY = Symbol.for("openclaw.toolSearch.sessionCatalogs");
 const globalToolSearchState = globalThis as typeof globalThis & {
   [SESSION_CATALOGS_KEY]?: Map<string, ToolSearchCatalogSession>;
@@ -433,7 +183,9 @@ const sessionCatalogs =
 const reusableCatalogSnapshots = new Map<string, ReusableCatalogSnapshot>();
 const catalogFingerprints = new WeakMap<ToolSearchCatalogSession, string>();
 const catalogToolIdentities = new WeakMap<object, number>();
+const untrustedSchemaIdentities = new WeakMap<object, number>();
 let nextCatalogToolIdentity = 1;
+let nextUntrustedSchemaIdentity = 1;
 
 function readToolSearchConfig(config?: OpenClawConfig): Record<string, unknown> {
   const tools = isRecord(config?.tools) ? config.tools : undefined;
@@ -569,6 +321,20 @@ function catalogToolIdentity(tool: CatalogTool): number {
   return next;
 }
 
+function untrustedSchemaFingerprint(schema: unknown): string {
+  if (schema === null || typeof schema !== "object") {
+    return stableJsonFingerprint(schema);
+  }
+  const existing = untrustedSchemaIdentities.get(schema);
+  if (existing !== undefined) {
+    return `object:${existing}`;
+  }
+  const next = nextUntrustedSchemaIdentity;
+  nextUntrustedSchemaIdentity += 1;
+  untrustedSchemaIdentities.set(schema, next);
+  return `object:${next}`;
+}
+
 function catalogEntriesFingerprint(entries: readonly ToolSearchCatalogEntry[]): string {
   // Fingerprints include object identity for executable tools because function
   // bodies are not JSON-stable but catalog reuse must not bind stale executors.
@@ -582,7 +348,14 @@ function catalogEntriesFingerprint(entries: readonly ToolSearchCatalogEntry[]): 
         entry.name,
         entry.label ?? "",
         entry.description,
-        stableJsonFingerprint(entry.parameters),
+        // Remote/client schemas may be attacker-sized. Object identity still
+        // invalidates reuse when a schema object is replaced without walking it.
+        entry.source === "openclaw"
+          ? stableJsonFingerprint(entry.parameters)
+          : untrustedSchemaFingerprint(entry.parameters),
+        entry.source === "openclaw"
+          ? stableJsonFingerprint(entry.outputSchema)
+          : untrustedSchemaFingerprint(entry.outputSchema),
         String(catalogToolIdentity(entry.tool)),
       ]
         .map((part) => JSON.stringify(part))
@@ -713,6 +486,11 @@ function toCatalogEntry(
     label: tool.label,
     description: tool.description ?? "",
     parameters: tool.parameters,
+    // Only locally loaded OpenClaw/core tools may declare model-visible output
+    // contracts. MCP and client metadata remains untrusted and deferred.
+    ...(source === "openclaw" && (tool as AnyAgentTool).outputSchema
+      ? { outputSchema: (tool as AnyAgentTool).outputSchema }
+      : {}),
     tool: catalogTool,
   };
 }
@@ -916,6 +694,33 @@ export function projectToolSearchTargetTranscriptMessages(
     inserted.add(projection);
   }
   return projected;
+}
+
+function freezeJsonSnapshot(value: unknown): unknown {
+  if (value === null || typeof value !== "object") {
+    return value;
+  }
+  for (const nested of Object.values(value)) {
+    freezeJsonSnapshot(nested);
+  }
+  return Object.freeze(value);
+}
+
+/** Capture a stable JSON-safe result before delayed transcript settlement. */
+function snapshotToolSearchTargetTranscriptResult(
+  result: AgentToolResult<unknown>,
+): AgentToolResult<unknown> {
+  const hasDetails = "details" in result;
+  const snapshot = toJsonSafe(result);
+  if (!isRecord(snapshot)) {
+    throw new Error("Tool Search target result could not be captured for transcript projection.");
+  }
+  if (hasDetails && !("details" in snapshot)) {
+    // `details` presence selects callValue unwrapping. JSON serialization drops
+    // an explicit undefined, so restore that marker before freezing the envelope.
+    snapshot.details = result.details === undefined ? undefined : toJsonSafe(result.details);
+  }
+  return freezeJsonSnapshot(snapshot) as AgentToolResult<unknown>;
 }
 
 /** Create an explicit catalog holder for callers that cannot rely on session keys. */
@@ -1151,117 +956,9 @@ function resolveCatalog(ctx: ToolSearchToolContext): ToolSearchCatalogSession {
   throw new ToolInputError("Tool Search catalog is unavailable for this run.");
 }
 
-function compactSchemaType(schema: unknown, depth = 0): string {
-  if (!isRecord(schema) || depth >= MAX_COMPACT_SCHEMA_DEPTH) {
-    return "unknown";
-  }
-  const enumValues =
-    Array.isArray(schema.enum) &&
-    schema.enum.length > 0 &&
-    schema.enum.length <= 6 &&
-    schema.enum.every(
-      (value): value is string | number | boolean | null =>
-        value === null ||
-        typeof value === "string" ||
-        (typeof value === "number" && Number.isFinite(value)) ||
-        typeof value === "boolean",
-    )
-      ? schema.enum
-      : [];
-  if (enumValues.length > 0 && enumValues.length <= 6) {
-    const rendered = enumValues.map((value) => JSON.stringify(value)).join(" | ");
-    if (rendered.length <= 96) {
-      return rendered;
-    }
-  }
-  const type = schema.type;
-  if (Array.isArray(type)) {
-    if (type.length > MAX_COMPACT_UNION_TYPES) {
-      return "unknown";
-    }
-    const types = type
-      .filter((value): value is string => typeof value === "string")
-      .map((value) => compactSchemaType({ ...schema, type: value }, depth + 1));
-    return types.length > 0 ? types.join(" | ") : "unknown";
-  }
-  if (type === "integer" || type === "number") {
-    return "number";
-  }
-  if (type === "array") {
-    return `Array<${compactSchemaType(schema.items, depth + 1)}>`;
-  }
-  if (type === "string" || type === "boolean" || type === "null" || type === "object") {
-    return type;
-  }
-  return "unknown";
-}
-
-function compactInputHint(parameters: unknown): string {
-  if (!isRecord(parameters)) {
-    return "unknown";
-  }
-  if (!isRecord(parameters.properties)) {
-    if (parameters.type !== "object") {
-      return compactSchemaType(parameters);
-    }
-    const hasRequired =
-      Array.isArray(parameters.required) &&
-      parameters.required.some((value) => typeof value === "string");
-    return hasRequired || parameters.additionalProperties !== false ? "{ ... }" : "{}";
-  }
-  const properties = parameters.properties;
-  const requiredValues = Array.isArray(parameters.required) ? parameters.required : [];
-  const required = new Set(
-    requiredValues
-      .slice(0, MAX_COMPACT_INPUT_PROPERTIES)
-      .filter((value): value is string => typeof value === "string"),
-  );
-  // Search hits cross the model/guest boundary. Required-first sorting and
-  // work/output bounds keep prompt bytes deterministic without exposing full schemas.
-  const selected = new Set<string>();
-  const keys: string[] = [];
-  for (const key of required) {
-    if (Object.hasOwn(properties, key)) {
-      selected.add(key);
-      keys.push(key);
-    }
-  }
-  let omitted =
-    requiredValues.length > MAX_COMPACT_INPUT_PROPERTIES ||
-    requiredValues
-      .slice(0, MAX_COMPACT_INPUT_PROPERTIES)
-      .some((value) => typeof value === "string" && !Object.hasOwn(properties, value)) ||
-    parameters.additionalProperties === true;
-  for (const key in properties) {
-    if (!Object.hasOwn(properties, key) || selected.has(key)) {
-      continue;
-    }
-    if (keys.length >= MAX_COMPACT_INPUT_PROPERTIES) {
-      omitted = true;
-      break;
-    }
-    selected.add(key);
-    keys.push(key);
-  }
-  keys.sort((a, b) => Number(required.has(b)) - Number(required.has(a)) || a.localeCompare(b));
-  const parts: string[] = [];
-  for (const key of keys) {
-    const name = /^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(key) ? key : JSON.stringify(key);
-    const part = `${name}${required.has(key) ? "" : "?"}: ${compactSchemaType(properties[key])}`;
-    const next = `{ ${[...parts, part].join("; ")} }`;
-    if (next.length > MAX_COMPACT_INPUT_HINT_CHARS) {
-      omitted = true;
-      break;
-    }
-    parts.push(part);
-  }
-  if (parts.length === 0) {
-    return keys.length === 0 && !omitted ? "{}" : "{ ... }";
-  }
-  return `{ ${parts.join("; ")}${omitted ? "; ..." : ""} }`;
-}
-
 export function compactToolSearchCatalogEntry(entry: ToolSearchCatalogEntry) {
+  const output =
+    entry.source === "openclaw" ? compactToolOutputHint(entry.outputSchema) : undefined;
   return {
     id: entry.id,
     source: entry.source,
@@ -1270,9 +967,10 @@ export function compactToolSearchCatalogEntry(entry: ToolSearchCatalogEntry) {
     name: entry.name,
     label: entry.label,
     description: entry.description,
-    // MCP schemas are server-provided, untrusted metadata. Keep them deferred
-    // until the model explicitly describes or calls the selected tool.
-    ...(entry.source === "mcp" ? {} : { input: compactInputHint(entry.parameters) }),
+    // Remote MCP and client schemas are untrusted metadata. Keep them deferred
+    // rather than repeatedly traversing attacker-sized property maps on search.
+    input: entry.source === "openclaw" ? compactToolInputHint(entry.parameters) : "unknown",
+    ...(output ? { output } : {}),
   };
 }
 
@@ -1654,6 +1352,7 @@ function describeEntry(entry: ToolSearchCatalogEntry) {
   return {
     ...compactToolSearchCatalogEntry(entry),
     parameters: entry.parameters ?? {},
+    ...(entry.outputSchema ? { outputSchema: entry.outputSchema } : {}),
   };
 }
 
@@ -1859,6 +1558,67 @@ function getTelemetry(catalog: ToolSearchCatalogSession) {
   };
 }
 
+let schemaValidatorModulePromise:
+  | Promise<typeof import("../plugins/schema-validator.js")>
+  | undefined;
+
+async function validateCatalogOutputValue(
+  entry: ToolSearchCatalogEntry,
+  value: unknown,
+): Promise<
+  ReturnType<typeof import("../plugins/schema-validator.js").validateJsonSchemaValue> | undefined
+> {
+  if (!entry.outputSchema) {
+    return undefined;
+  }
+  try {
+    schemaValidatorModulePromise ??= import("../plugins/schema-validator.js");
+    const { validateJsonSchemaValue } = await schemaValidatorModulePromise;
+    return validateJsonSchemaValue({
+      schema: entry.outputSchema as never,
+      // The shared validator fingerprints schema changes under the caller key,
+      // so a rebuilt same-id catalog cannot retain a stale compiled contract.
+      cacheKey: `tool-output:${entry.id}`,
+      value,
+    });
+  } catch (error) {
+    throw new Error(`Tool "${entry.id}" has an invalid outputSchema.`, { cause: error });
+  }
+}
+
+async function assertCatalogOutputSchemaIsValid(entry: ToolSearchCatalogEntry): Promise<void> {
+  // Compile before execution. A bad contract must not turn a successful side
+  // effect into a retryable post-execution schema failure.
+  await validateCatalogOutputValue(entry, undefined);
+}
+
+async function assertCatalogOutputMatchesSchema(
+  entry: ToolSearchCatalogEntry,
+  result: AgentToolResult<unknown>,
+): Promise<void> {
+  if (!entry.outputSchema) {
+    return;
+  }
+  if (isPreExecutionBlockedToolResult(result)) {
+    const details = unwrapToolResultValue(result);
+    const reason =
+      isRecord(details) && typeof details.reason === "string" && details.reason.trim()
+        ? details.reason
+        : "Tool call blocked by policy";
+    throw new Error(`Tool "${entry.id}" was blocked before execution: ${reason}`);
+  }
+  const validation = await validateCatalogOutputValue(entry, unwrapToolResultValue(result));
+  if (!validation) {
+    return;
+  }
+  if (validation.ok) {
+    return;
+  }
+  throw new Error(
+    `Tool "${entry.id}" returned details that do not match its declared outputSchema.`,
+  );
+}
+
 function sanitizeToolCallIdPart(value: string): string {
   const trimmed = value.trim();
   const safe = trimmed.replace(/[^A-Za-z0-9_.:-]+/g, "_").slice(0, 120);
@@ -1966,18 +1726,29 @@ export class ToolSearchRuntime {
     },
   ) => {
     catalog.callCount += 1;
+    await assertCatalogOutputSchemaIsValid(entry);
     const parentId = sanitizeToolCallIdPart(options?.parentToolCallId ?? "direct");
     const toolCallId = `tool_search_code:${parentId}:${entry.name}:${++this.callSequence}`;
     const executeTool =
       this.ctx.executeTool ??
-      (async (params: Parameters<ToolSearchCatalogToolExecutor>[0]) =>
-        await params.tool.execute(
+      (async (params: Parameters<ToolSearchCatalogToolExecutor>[0]) => {
+        const result = await params.tool.execute(
           params.toolCallId,
           params.input,
           params.signal,
           params.onUpdate,
           undefined as never,
-        ));
+        );
+        return await params.acceptResultBeforeProjection(result);
+      });
+    const acceptResultBeforeProjection = async (candidate: AgentToolResult<unknown>) => {
+      if (isPreExecutionBlockedToolResult(candidate)) {
+        await assertCatalogOutputMatchesSchema(entry, candidate);
+      }
+      const snapshot = snapshotToolSearchTargetTranscriptResult(candidate);
+      await assertCatalogOutputMatchesSchema(entry, snapshot);
+      return snapshot;
+    };
     const result = await executeTool({
       tool: entry.tool,
       toolName: entry.name,
@@ -1988,10 +1759,14 @@ export class ToolSearchRuntime {
       input: input ?? {},
       signal: options?.signal ?? this.ctx.abortSignal,
       onUpdate: options?.onUpdate,
+      acceptResultBeforeProjection,
     });
+    // Production executors queue the accepted snapshot. Repeat acceptance here
+    // so headless/custom executors cannot return a mutable unvalidated value.
+    const acceptedResult = await acceptResultBeforeProjection(result);
     return {
       tool: compactToolSearchCatalogEntry(entry),
-      result,
+      result: acceptedResult,
     };
   };
 
@@ -2477,7 +2252,9 @@ export function createToolSearchTools(ctx: ToolSearchToolContext): AnyAgentTool[
         "Search the effective Tool Search catalog. Pass an exact result id or name to tool_call; use tool_describe only when you need its input schema.",
       parameters: Type.Object({
         query: Type.String({ description: "Search query." }),
-        limit: Type.Optional(Type.Number({ description: "Maximum number of results." })),
+        limit: Type.Optional(
+          Type.Integer({ minimum: 1, description: "Maximum number of results." }),
+        ),
       }),
       execute: async (_toolCallId: string, args: unknown): Promise<AgentToolResult<unknown>> => {
         const search = readSearchArgs(args, config);

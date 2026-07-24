@@ -10,10 +10,6 @@ type SlackHttpReceiverConstructor = typeof import("@slack/bolt").HTTPReceiver;
 type SlackReceiver = import("@slack/bolt").Receiver;
 type SlackSocketModeReceiverConstructor = typeof import("@slack/bolt").SocketModeReceiver;
 type SlackSocketModeReceiverOptions = ConstructorParameters<SlackSocketModeReceiverConstructor>[0];
-type SlackSocketModeConfig = Pick<
-  SlackSocketModeReceiverOptions,
-  "clientPingTimeout" | "serverPingTimeout" | "pingPongLoggingEnabled"
->;
 type SlackSdkLogger = NonNullable<SlackSocketModeReceiverOptions["logger"]>;
 type SlackSdkLogLevel = ReturnType<SlackSdkLogger["getLevel"]>;
 type SlackSocketModeLogger = SlackSdkLogger & {
@@ -308,32 +304,26 @@ function shouldSkipOpenClawSlackSelfEvent(args: SlackSelfFilterArgs): boolean {
 export function createSlackBoltApp(params: {
   interop: SlackBoltResolvedExports;
   slackMode: "socket" | "http" | "relay";
-  botToken: string;
+  token: string;
   appToken?: string;
   signingSecret?: string;
   slackWebhookPath: string;
   clientOptions: Record<string, unknown>;
-  socketMode?: SlackSocketModeConfig;
+  dispatcher?: SlackSocketModeReceiverOptions["dispatcher"];
   wrapReceiver?: (receiver: SlackReceiver) => SlackReceiver;
 }) {
   const socketModeLogger = createSlackSocketModeLogger();
   const socketModeReceiverOptions: SlackSocketModeReceiverOptions = {
     appToken: params.appToken ?? "",
     autoReconnectEnabled: true,
-    clientPingTimeout:
-      params.socketMode?.clientPingTimeout ?? OPENCLAW_SLACK_CLIENT_PING_TIMEOUT_MS,
+    clientPingTimeout: OPENCLAW_SLACK_CLIENT_PING_TIMEOUT_MS,
     logger: socketModeLogger,
+    ...(params.dispatcher ? { dispatcher: params.dispatcher } : {}),
     installerOptions: {
       clientOptions: params.clientOptions,
     },
     ...(params.wrapReceiver ? { processEventErrorHandler: async () => false } : {}),
   };
-  if (params.socketMode?.serverPingTimeout !== undefined) {
-    socketModeReceiverOptions.serverPingTimeout = params.socketMode.serverPingTimeout;
-  }
-  if (params.socketMode?.pingPongLoggingEnabled !== undefined) {
-    socketModeReceiverOptions.pingPongLoggingEnabled = params.socketMode.pingPongLoggingEnabled;
-  }
 
   let receiver:
     | InstanceType<SlackSocketModeReceiverConstructor>
@@ -354,7 +344,7 @@ export function createSlackBoltApp(params: {
   }
   const appReceiver = receiver && params.wrapReceiver ? params.wrapReceiver(receiver) : receiver;
   const app = new params.interop.App({
-    token: params.botToken,
+    token: params.token,
     clientOptions: params.clientOptions,
     ignoreSelf: false,
     // Bolt eagerly starts an auth.test promise in the constructor when token

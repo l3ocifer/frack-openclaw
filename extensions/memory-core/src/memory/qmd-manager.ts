@@ -380,8 +380,11 @@ export class QmdMemoryManager implements MemorySearchManager {
       async (args, opts) => await this.commands.run(args, opts),
       async (signal) => await this.buildQmdCollectionValidationCacheContext(signal),
     );
-    this.documentResolver = new QmdDocumentResolver(this.workspaceDir, this.collectionRoots, () =>
-      this.ensureDb(),
+    this.documentResolver = new QmdDocumentResolver(
+      this.workspaceDir,
+      this.collectionRoots,
+      () => this.ensureDb(),
+      this.qmd.sessions.readable,
     );
     this.closeSignal = new Promise<void>((resolve) => {
       this.resolveCloseSignal = resolve;
@@ -731,7 +734,14 @@ export class QmdMemoryManager implements MemorySearchManager {
       this.qmd.limits.maxResults,
       opts?.maxResults ?? this.qmd.limits.maxResults,
     );
-    const requestedSources = opts?.sources?.length ? uniqueValues(opts.sources) : undefined;
+    // Remember-only session exports are indexed for trusted recall but are not
+    // part of ordinary manager searches. Explicit export keeps its existing
+    // ordinary-access behavior; trusted recall always passes sources=sessions.
+    const requestedSources = opts?.sources?.length
+      ? uniqueValues(opts.sources)
+      : this.qmd.sessions.readable
+        ? undefined
+        : (["memory"] satisfies MemorySource[]);
     const collectionNames = this.listManagedCollectionNames(requestedSources);
     const limit = resultLimit;
     if (collectionNames.length === 0) {
@@ -994,7 +1004,7 @@ export class QmdMemoryManager implements MemorySearchManager {
     if (params.from !== undefined || params.lines !== undefined) {
       const startLine = normalizePositiveInteger(params.from, 1);
       const requestedCount = normalizePositiveInteger(
-        params.lines ?? contextLimits?.memoryGetDefaultLines ?? DEFAULT_MEMORY_READ_LINES,
+        params.lines ?? DEFAULT_MEMORY_READ_LINES,
         DEFAULT_MEMORY_READ_LINES,
       );
       const partial = await this.readPartialText(absPath, startLine, requestedCount);
@@ -1019,7 +1029,7 @@ export class QmdMemoryManager implements MemorySearchManager {
       relPath,
       from: params.from,
       lines: params.lines,
-      defaultLines: contextLimits?.memoryGetDefaultLines ?? DEFAULT_MEMORY_READ_LINES,
+      defaultLines: DEFAULT_MEMORY_READ_LINES,
       maxChars: contextLimits?.memoryGetMaxChars,
       suggestReadFallback: isDefaultMemoryPath(relPath),
     });
@@ -1298,7 +1308,7 @@ export class QmdMemoryManager implements MemorySearchManager {
       count,
       "paths",
       "Large QMD collections can make OpenClaw run out of file watchers or open files.",
-      "Remove large collections, or set memorySearch.sync.watch to false and refresh memory manually or with sync.intervalMinutes.",
+      "Remove large collections, or set memory.search.sync.watch to false and refresh memory manually.",
       (message) => log.warn(message),
     );
   }

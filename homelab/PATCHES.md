@@ -148,6 +148,39 @@ kubectl delete pod -n agents-shared frack-migrate
 kubectl delete pod -n agents-shared "$POD"   # fresh pod re-seeds and starts clean
 ```
 
+### The re-seed trap: a ConfigMap change that never reaches the gateway
+
+The seed init container compares the ConfigMap's sha256 against a marker file at
+`/root/.openclaw/runtime-config/.configmap-source.sha256`. It never compares the
+ConfigMap against the _runtime copy itself_. Normally that is fine and desirable
+— it is what lets doctor's rewrite survive a restart. It fails when the gateway
+rewrites the runtime copy in the same boot in which it was seeded, which it does
+whenever it normalises the config (you can see it happen: it preserves the file
+it overwrote as `openclaw.json.clobbered.<timestamp>` and the previous accepted
+one as `openclaw.json.last-good`). After that the marker matches the ConfigMap
+while the file on disk does not, and _every subsequent restart is a no-op_ — the
+init container logs `runtime copy preserved (configmap unchanged: <hash>)` and
+the stale copy is loaded forever.
+
+Puck hit this with the `memory.search.provider` fix: the ConfigMap was correct,
+ArgoCD reported Synced, the pod was restarted twice, and the gateway still
+logged the `"remote"` warning, because it was reading a copy that had been
+clobbered back to the pre-fix content.
+
+Clear the marker to force a re-seed. Do this after any ConfigMap change that a
+plain restart did not pick up:
+
+```sh
+POD=$(kubectl get pods -n agents-shared -l app.kubernetes.io/name=frack -o name | head -1 | cut -d/ -f2)
+kubectl exec -n agents-shared "$POD" -c openclaw -- rm -f /root/.openclaw/runtime-config/.configmap-source.sha256
+kubectl delete pod -n agents-shared "$POD"
+```
+
+Then confirm the value actually landed rather than trusting the restart — the
+seed log should say `seeding`, not `preserved`. A freshly seeded copy still has
+its JSON5 comments; a doctor-rewritten one does not, which is a quick way to
+tell which of the two the gateway is running.
+
 ## Resolving an upstream merge conflict
 
 When `git merge upstream/main` reports a conflict in a file we patch:

@@ -2,6 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { ContentBlock } from "@modelcontextprotocol/sdk/types.js";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
 import { sliceUtf16Safe, truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
@@ -37,6 +38,7 @@ import {
 } from "../infra/host-env-security.js";
 import {
   NODE_AGENT_CLI_CLAUDE_RUN_COMMAND,
+  NODE_DEVICE_APPS_COMMAND,
   NODE_MCP_TOOLS_CALL_COMMAND,
 } from "../infra/node-commands.js";
 import { logWarn } from "../logger.js";
@@ -47,6 +49,7 @@ import {
   handleClaudeCliNodeInvoke,
   type NodeHostInvokeRuntime,
 } from "./invoke-agent-cli-claude-handler.js";
+import { invokeDeviceApps } from "./invoke-device-apps.js";
 import { invokeNodeFileCommand } from "./invoke-file-commands.js";
 import {
   buildSystemRunApprovalPlan,
@@ -567,6 +570,20 @@ async function dispatchInvoke(
   runtime: NodeHostInvokeRuntime = {},
 ) {
   const command = frame.command ?? "";
+  if (command === NODE_DEVICE_APPS_COMMAND) {
+    const result = await invokeDeviceApps({
+      paramsJSON: frame.paramsJSON,
+      sharingEnabled: runtime.installedAppsSharingEnabled === true,
+      ...(runtime.installedAppsPlatform ? { platform: runtime.installedAppsPlatform } : {}),
+      ...(runtime.scanInstalledApps ? { scan: runtime.scanInstalledApps } : {}),
+    });
+    if (result.ok) {
+      await sendJsonPayloadResult(client, frame, result.payload);
+    } else {
+      await sendErrorResult(client, frame, result.code, result.message);
+    }
+    return;
+  }
   if (command === "system.execApprovals.get") {
     try {
       const snapshot = await ensureExecApprovalsSnapshot();
@@ -818,10 +835,6 @@ async function dispatchInvoke(
     },
     preferMacAppExecHost,
   });
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function decodeMcpToolsCallParams(raw?: string | null): McpToolsCallParams {

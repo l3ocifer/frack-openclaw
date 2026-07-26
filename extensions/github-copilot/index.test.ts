@@ -474,7 +474,7 @@ describe("github-copilot plugin", () => {
           },
         },
       ],
-      defaultModel: "github-copilot/claude-opus-4.7",
+      defaultModel: "github-copilot/claude-opus-5",
     });
   });
 
@@ -1176,11 +1176,7 @@ describe("github-copilot plugin", () => {
         accessTokenPolls += 1;
         return {
           response: new Response(
-            JSON.stringify(
-              accessTokenPolls === 1
-                ? { error: "authorization_pending" }
-                : { access_token: "refreshed-token", token_type: "bearer" },
-            ),
+            JSON.stringify({ access_token: "refreshed-token", token_type: "bearer" }),
             { status: 200, headers: { "Content-Type": "application/json" } },
           ),
           finalUrl: params.url,
@@ -1193,13 +1189,14 @@ describe("github-copilot plugin", () => {
         expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), MAX_TIMER_TIMEOUT_MS),
       );
       await vi.advanceTimersByTimeAsync(MAX_TIMER_TIMEOUT_MS);
-      expect(accessTokenPolls).toBe(1);
+      expect(accessTokenPolls).toBe(0);
 
       await vi.advanceTimersByTimeAsync(3_000_000_000 - MAX_TIMER_TIMEOUT_MS);
       await expect(flow).resolves.toEqual({
         status: "authorized",
         accessToken: "refreshed-token",
       });
+      expect(accessTokenPolls).toBe(1);
     } finally {
       vi.useRealTimers();
     }
@@ -1231,9 +1228,9 @@ describe("github-copilot plugin", () => {
       mode: "token",
     });
     expect(result?.agents?.defaults?.model).toEqual({
-      primary: "github-copilot/claude-opus-4.7",
+      primary: "github-copilot/claude-opus-5",
     });
-    expect(result?.agents?.defaults?.models?.["github-copilot/claude-opus-4.7"]).toStrictEqual({});
+    expect(result?.agents?.defaults?.models?.["github-copilot/claude-opus-5"]).toStrictEqual({});
 
     const profile = ensureAuthProfileStore(agentDir).profiles["github-copilot:github"];
     expect(profile).toEqual({
@@ -1332,7 +1329,7 @@ describe("github-copilot plugin", () => {
     expect(runtime.error).not.toHaveBeenCalled();
     expect(result?.agents?.defaults?.model).toEqual({
       fallbacks: ["openai/gpt-5.4"],
-      primary: "github-copilot/claude-opus-4.7",
+      primary: "github-copilot/claude-opus-5",
     });
 
     const profile = ensureAuthProfileStore(agentDir).profiles["github-copilot:github"];

@@ -24,15 +24,66 @@ import {
   writeSessionCostUsageRollup,
 } from "./session-cost-usage-cache.sqlite.js";
 import {
-  discoverAllSessions,
-  loadCostUsageSummary,
-  loadCostUsageSummaryFromCache,
-  loadSessionCostSummary,
-  loadSessionCostSummariesFromCache,
-  loadSessionLogs,
-  loadSessionUsageTimeSeries,
-  resolveExistingUsageSessionFile,
+  discoverAllSessions as discoverAllSessionsForAgent,
+  loadCostUsageSummary as loadCostUsageSummaryForAgent,
+  loadCostUsageSummaryFromCache as loadCostUsageSummaryFromCacheForAgent,
+  loadSessionCostSummary as loadSessionCostSummaryForAgent,
+  loadSessionCostSummariesFromCache as loadSessionCostSummariesFromCacheForAgent,
+  loadSessionLogs as loadSessionLogsForAgent,
+  loadSessionUsageTimeSeries as loadSessionUsageTimeSeriesForAgent,
+  resolveExistingUsageSessionFile as resolveExistingUsageSessionFileForAgent,
 } from "./session-cost-usage.js";
+import { testing as sessionCostUsageTestApi } from "./session-cost-usage.test-support.js";
+
+type WithOptionalAgentId<T> = T extends (params: infer P) => unknown
+  ? Omit<P, "agentId"> & { agentId?: string }
+  : never;
+
+const withMainAgent = <T extends object>(params: T): T & { agentId: string } => ({
+  ...params,
+  agentId:
+    typeof (params as { agentId?: unknown }).agentId === "string"
+      ? (params as { agentId: string }).agentId
+      : "main",
+});
+
+const discoverAllSessions = (
+  params: WithOptionalAgentId<typeof discoverAllSessionsForAgent> = {},
+) => discoverAllSessionsForAgent(withMainAgent(params));
+const loadCostUsageSummary = (
+  params: WithOptionalAgentId<typeof loadCostUsageSummaryForAgent> = {},
+) => loadCostUsageSummaryForAgent(withMainAgent(params));
+const loadCostUsageSummaryFromCache = (
+  params: WithOptionalAgentId<typeof loadCostUsageSummaryFromCacheForAgent>,
+) => loadCostUsageSummaryFromCacheForAgent(withMainAgent(params));
+const loadSessionCostSummary = (
+  params: WithOptionalAgentId<typeof loadSessionCostSummaryForAgent>,
+) => loadSessionCostSummaryForAgent(withMainAgent(params));
+const loadSessionCostSummariesFromCache = (
+  params: WithOptionalAgentId<typeof loadSessionCostSummariesFromCacheForAgent>,
+) => loadSessionCostSummariesFromCacheForAgent(withMainAgent(params));
+const loadSessionLogs = (params: WithOptionalAgentId<typeof loadSessionLogsForAgent>) =>
+  loadSessionLogsForAgent(withMainAgent(params));
+const loadSessionUsageTimeSeries = (
+  params: WithOptionalAgentId<typeof loadSessionUsageTimeSeriesForAgent>,
+) => loadSessionUsageTimeSeriesForAgent(withMainAgent(params));
+const resolveExistingUsageSessionFile = (
+  params: WithOptionalAgentId<typeof resolveExistingUsageSessionFileForAgent>,
+) => resolveExistingUsageSessionFileForAgent(withMainAgent(params));
+
+function waitForFast<T>(
+  callback: () => T | Promise<T>,
+  options: { timeout?: number; interval?: number } = {},
+) {
+  return vi.waitFor(callback, { interval: 1, ...options });
+}
+
+async function refreshSessionCostUsageForTest(sessionFile: string): Promise<void> {
+  await sessionCostUsageTestApi.usageCostRefreshRuntime.refreshCostUsageCacheForAgent({
+    agentId: "main",
+    sessionFiles: [sessionFile],
+  });
+}
 
 function clearGatewayModelPricingState(): void {
   replaceGatewayModelPricingCache(new Map(), 0);
@@ -164,6 +215,88 @@ describe("session cost usage", () => {
     });
   });
 
+  it("prices and aggregates usage with each row's agent-local registry", async () => {
+    const root = await makeSessionCostRoot("agent-scoped-pricing");
+    const provider = "demo-agent-scope";
+    const model = "demo-model";
+    const now = new Date().toISOString();
+    const writeAgentUsage = async (agentId: string, inputPrice: number, inputs: number[]) => {
+      const agentRoot = path.join(root, "agents", agentId);
+      const agentDir = path.join(agentRoot, "agent");
+      const sessionsDir = path.join(agentRoot, "sessions");
+      await fs.mkdir(agentDir, { recursive: true });
+      await fs.mkdir(sessionsDir, { recursive: true });
+      await fs.writeFile(
+        path.join(agentDir, "models.json"),
+        JSON.stringify({
+          providers: {
+            [provider]: {
+              models: [
+                {
+                  id: model,
+                  cost: { input: inputPrice, output: 0, cacheRead: 0, cacheWrite: 0 },
+                },
+              ],
+            },
+          },
+        }),
+        "utf8",
+      );
+      await fs.writeFile(
+        path.join(sessionsDir, `${agentId}-session.jsonl`),
+        [
+          JSON.stringify({ type: "session", version: 1, id: `${agentId}-session` }),
+          ...inputs.map((input) =>
+            JSON.stringify({
+              type: "message",
+              timestamp: now,
+              message: {
+                role: "assistant",
+                provider,
+                model,
+                usage: { input, output: 0, totalTokens: input },
+              },
+            }),
+          ),
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+    };
+
+    await writeAgentUsage("main", 9, [250_000]);
+    await writeAgentUsage("alpha", 1, [1_000_000, 500_000]);
+    await writeAgentUsage("beta", 2, [1_000_000]);
+    const config = {
+      models: {
+        providers: {
+          [provider]: {
+            models: [
+              {
+                id: model,
+                cost: { input: 7, output: 0, cacheRead: 0, cacheWrite: 0 },
+              },
+            ],
+          },
+        },
+      },
+    } as unknown as OpenClawConfig;
+
+    await withStateDir(root, async () => {
+      const alpha = await loadCostUsageSummary({ agentId: "alpha", config });
+      const beta = await loadCostUsageSummary({ agentId: "beta", config });
+      const unscoped = await loadCostUsageSummary({ config });
+
+      expect(alpha.totals.totalTokens).toBe(1_500_000);
+      expect(alpha.totals.totalCost).toBeCloseTo(1.5, 8);
+      expect(beta.totals.totalTokens).toBe(1_000_000);
+      expect(beta.totals.totalCost).toBeCloseTo(2, 8);
+      expect(alpha.totals.totalCost + beta.totals.totalCost).toBeCloseTo(3.5, 8);
+      expect(unscoped.totals.totalTokens).toBe(250_000);
+      expect(unscoped.totals.totalCost).toBeCloseTo(2.25, 8);
+    });
+  });
+
   it("does not fall back from empty SQLite transcripts to stale JSONL usage files", async () => {
     const root = await makeSessionCostRoot("sqlite-cost-empty");
     const storePath = path.join(root, "agents", "main", "sessions", "sessions.json");
@@ -280,7 +413,7 @@ describe("session cost usage", () => {
         agentId: "main",
         sessions: [{ sessionId, sessionFile }],
       });
-      await vi.waitFor(
+      await waitForFast(
         async () => {
           const bulk = await loadSessionCostSummariesFromCache({
             agentId: "main",
@@ -716,7 +849,7 @@ describe("session cost usage", () => {
       const session = { sessionId: "sess-batch-range", sessionFile };
       await loadSessionCostSummariesFromCache({ sessions: [session], agentId: "main" });
       const rangeEndMs = Date.UTC(2026, 1, 5) + 24 * 60 * 60 * 1000 - 1;
-      await vi.waitFor(
+      await waitForFast(
         async () => {
           const ranged = await loadSessionCostSummariesFromCache({
             sessions: [session],
@@ -806,21 +939,20 @@ describe("session cost usage", () => {
       [
         JSON.stringify(assistantEntry(undefined, 1_000)),
         JSON.stringify(assistantEntry("2026-02-05T12:00:00.000Z", 20)),
+        "",
       ].join("\n"),
       "utf-8",
     );
 
     await withStateDir(root, async () => {
       const session = { sessionId: "sess-v8-upgrade", sessionFile };
-      await loadSessionCostSummariesFromCache({ sessions: [session], agentId: "main" });
-      await vi.waitFor(async () => {
-        const current = await loadSessionCostSummariesFromCache({
-          sessions: [session],
-          agentId: "main",
-          requestRefresh: false,
-        });
-        expect(current.cacheStatus.status).toBe("fresh");
+      await refreshSessionCostUsageForTest(sessionFile);
+      const current = await loadSessionCostSummariesFromCache({
+        sessions: [session],
+        agentId: "main",
+        requestRefresh: false,
       });
+      expect(current.cacheStatus.status).toBe("fresh");
 
       const currentRow = requireValue(
         readSessionCostUsageRollupRows("main").find((row) => row.key === sessionFile),
@@ -843,41 +975,32 @@ describe("session cost usage", () => {
       ).toBe(true);
 
       const rangeEndMs = Date.UTC(2026, 1, 5) + 24 * 60 * 60 * 1000 - 1;
-      await loadSessionCostSummariesFromCache({
+      await refreshSessionCostUsageForTest(sessionFile);
+      const rebuilt = await loadSessionCostSummariesFromCache({
         sessions: [session],
         agentId: "main",
         startMs: Date.UTC(2026, 1, 5),
         endMs: rangeEndMs,
+        requestRefresh: false,
       });
-      await vi.waitFor(async () => {
-        const rebuilt = await loadSessionCostSummariesFromCache({
-          sessions: [session],
-          agentId: "main",
-          startMs: Date.UTC(2026, 1, 5),
-          endMs: rangeEndMs,
-          requestRefresh: false,
-        });
-        expect(rebuilt.cacheStatus.status).toBe("fresh");
-        expect(rebuilt.summaries[0]?.totalTokens).toBe(20);
-      });
+      expect(rebuilt.cacheStatus.status).toBe("fresh");
+      expect(rebuilt.summaries[0]?.totalTokens).toBe(20);
 
       await fs.appendFile(
         sessionFile,
-        `\n${JSON.stringify(assistantEntry("2026-02-05T13:00:00.000Z", 5))}`,
+        `${JSON.stringify(assistantEntry("2026-02-05T13:00:00.000Z", 5))}\n`,
         "utf-8",
       );
-      await loadSessionCostSummariesFromCache({ sessions: [session], agentId: "main" });
-      await vi.waitFor(async () => {
-        const appended = await loadSessionCostSummariesFromCache({
-          sessions: [session],
-          agentId: "main",
-          startMs: Date.UTC(2026, 1, 5),
-          endMs: rangeEndMs,
-          requestRefresh: false,
-        });
-        expect(appended.cacheStatus.status).toBe("fresh");
-        expect(appended.summaries[0]?.totalTokens).toBe(25);
+      await refreshSessionCostUsageForTest(sessionFile);
+      const appended = await loadSessionCostSummariesFromCache({
+        sessions: [session],
+        agentId: "main",
+        startMs: Date.UTC(2026, 1, 5),
+        endMs: rangeEndMs,
+        requestRefresh: false,
       });
+      expect(appended.cacheStatus.status).toBe("fresh");
+      expect(appended.summaries[0]?.totalTokens).toBe(25);
 
       const appendedRow = requireValue(
         readSessionCostUsageRollupRows("main").find((row) => row.key === sessionFile),
@@ -1480,7 +1603,7 @@ describe("session cost usage", () => {
       });
 
       expect(summary.totals.totalTokens).toBe(30);
-      await vi.waitFor(
+      await waitForFast(
         async () => {
           const refreshed = await loadCostUsageSummaryFromCache({
             startMs: Date.UTC(2026, 1, 5),
@@ -1532,7 +1655,7 @@ describe("session cost usage", () => {
         sessions,
         agentId: "main",
       });
-      await vi.waitFor(
+      await waitForFast(
         async () => {
           const cached = await loadSessionCostSummariesFromCache({
             sessions,

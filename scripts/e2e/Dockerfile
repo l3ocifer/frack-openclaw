@@ -4,7 +4,7 @@
 # `bare` is a clean Node/Git runner for install/update lanes. `functional`
 # installs the prepared OpenClaw npm tarball into /app for built-app lanes.
 
-FROM node:24-bookworm-slim@sha256:242549cd46785b480c832479a730f4f2a20865d61ea2e404fdb2a5c3d3b73ecf AS e2e-runner
+FROM node:24-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d AS e2e-runner
 
 # openssl provisions short-lived fixture certificates for HTTPS-only provider
 # routes. python3 covers package/plugin install paths that execute helper scripts.
@@ -91,13 +91,15 @@ FROM bare AS functional
 COPY --from=openclaw_package --chown=appuser:appuser openclaw-current.tgz /tmp/openclaw-current.tgz
 COPY --from=functional-deps --chown=appuser:appuser /tmp/openclaw-deps/node_modules /app/node_modules
 # Extract the package over the prebuilt dependency tree (bundled deps ship in
-# the tarball), then run its packaged postinstall exactly as `npm install -g`
-# would. The /app/node_modules/openclaw self-link preserves package
-# self-reference imports such as openclaw/plugin-sdk/*; create it after
-# postinstall so its prune walks cannot cycle through the link.
+# the tarball), then run its packaged postinstall. Functional E2E lanes exercise
+# private bundled plugins too, so skip the production migration's intentionally
+# curated persisted registry in this test image. The /app/node_modules/openclaw
+# self-link preserves package self-reference imports such as
+# openclaw/plugin-sdk/*; create it after postinstall so its prune walks cannot
+# cycle through the link.
 RUN tar -xzf /tmp/openclaw-current.tgz -C /app --strip-components=1 \
  && chmod +x /app/openclaw.mjs \
- && node /app/scripts/postinstall-bundled-plugins.mjs \
+ && node --input-type=module -e "import { runBundledPluginPostinstall } from '/app/scripts/postinstall-bundled-plugins.mjs'; runBundledPluginPostinstall();" \
  && ln -sfn /app /app/node_modules/openclaw \
  && mkdir -p "$HOME/.local/bin" \
  && ln -sf /app/openclaw.mjs "$HOME/.local/bin/openclaw" \

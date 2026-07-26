@@ -148,6 +148,42 @@ kubectl delete pod -n agents-shared frack-migrate
 kubectl delete pod -n agents-shared "$POD"   # fresh pod re-seeds and starts clean
 ```
 
+### Cutover sequencing: a config that has to load on two images at once
+
+frack's post-sync image never published — the build fires on `src/**` and the
+upstream merge touched 9603 matching files, so it ran and failed, leaving
+`:homelab` on the pre-sync digest while the pod kept serving. That produced a
+window where the two images disagree about the _same_ config file:
+
+| key                                                  | pre-sync image | post-sync image                    |
+| ---------------------------------------------------- | -------------- | ---------------------------------- |
+| `agents.defaults.compaction.reserveTokens` / `Floor` | accepted       | **rejected**                       |
+| `agents.defaults.memorySearch`                       | accepted       | **rejected**                       |
+| root `memory.search`                                 | **rejected**   | accepted                           |
+| `agents.list`                                        | accepted       | accepted (migrated pre-validation) |
+
+Migrating the file forward takes the running pod down; leaving it takes the new
+image down the moment it rolls. The only form that loads on both is to **delete
+the retired keys and not add the replacements yet** — which is what
+`homelab/config/openclaw.json` now does. The cost is that semantic recall falls
+back to keyword/FTS until root `memory.search` is restored.
+
+To finish the cutover, in this order:
+
+1. Confirm the pod is actually on the post-sync digest — compare the `:homelab`
+   tag's digest to `kubectl get deploy frack -o jsonpath='{...containers[0].image}'`.
+   Do not trust ArgoCD Synced/Healthy; it reported both for 13 hours against a
+   stale image.
+2. Expect a crash on the persisted database schema and run `openclaw doctor
+--fix` against a paused copy of the pod (see the runbook below). The state
+   PVC outlives the image, so this is unavoidable on a schema bump.
+3. Restore memory search at the **root** as `memory.search`, taking the block
+   from the `config/post-sync-schema` branch, and set
+   `provider: "openai-compatible"` — not `"remote"`, which is not a provider id
+   and silently disables embeddings.
+4. Re-run the validator, then clear the seed marker (next section) so the new
+   ConfigMap actually reaches the gateway.
+
 ### The re-seed trap: a ConfigMap change that never reaches the gateway
 
 The seed init container compares the ConfigMap's sha256 against a marker file at

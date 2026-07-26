@@ -165,16 +165,16 @@
       // harness now uses, since OpenClaw inherits the agent's model
       // when no per-runtime override exists.
       workspace: "/root/.openclaw/workspace",
-      // reserveTokens / reserveTokensFloor: matches the proven puck config.
-      // IMPORTANT (verified live 2026-06-25 on OpenClaw 2026.6.10): these
-      // agents.defaults.compaction keys do NOT change the embedded mid-turn
-      // overflow precheck's reserve — the precheck reads its reserve from the
-      // agent settings.json (default 16384) and the precheck still logged
-      // reserveTokens=16384 even with reserveTokens:6000 loaded here. They only
-      // feed the projection / OpenClaw-compaction paths. The lever that actually
-      // makes turns fit is the chat model's contextWindow (see below). Kept at
-      // 6000 for the projection paths and parity with puck.
-      compaction: { mode: "safeguard", reserveTokens: 6000, reserveTokensFloor: 6000 },
+      // `reserveTokens` / `reserveTokensFloor` were removed here 2026-07-26.
+      // Upstream retired both (the projection-reserve mechanism they fed is
+      // gone) and the post-sync image rejects them outright — that is what
+      // crash-looped puck. They were never the effective lever anyway: verified
+      // live 2026-06-25 that the mid-turn overflow precheck read its own 16384
+      // reserve from the agent settings.json regardless of what was set here.
+      // The lever that actually makes turns fit is the chat model's
+      // contextWindow (see below); if prompt-budget starvation returns,
+      // `compaction.keepRecentTokens` is the modern knob.
+      compaction: { mode: "safeguard" },
       contextPruning: { mode: "cache-ttl", ttl: "1h" },
       maxConcurrent: 4,
       thinkingDefault: "low",
@@ -185,57 +185,19 @@
         every: "30m",
         target: "last",
       },
-      memorySearch: {
-        enabled: true,
-        sources: ["memory", "sessions"],
-        // Multi-graph: own graph (RW), Leo's PKM (R+restricted W),
-        // siblings R-only. Mounted via hostPath on thebeast.
-        extraPaths: [
-          "/data/graphs/frack/pages/ai-memory",
-          "/data/graphs/frack/journals",
-          "/data/graphs/frack/pages",
-          "/data/graphs/leo/pages",
-          "/data/graphs/leo/journals",
-          "/data/graphs/frick/pages/ai-memory",
-          "/data/graphs/frick/journals",
-          "/data/graphs/sancho/pages/ai-memory",
-          "/data/graphs/sancho/journals",
-        ],
-        // Embedding provider — point `remote.baseUrl` at LiteLLM's
-        // OpenAI-compatible /v1 endpoint and use the `embed` model.
-        provider: "remote",
-        remote: {
-          baseUrl: "http://litellm.inference.svc.cluster.local:4000/v1",
-          apiKey: { source: "env", provider: "default", id: "LITELLM_API_KEY" },
-        },
-        model: "embed",
-        fallback: "local",
-        local: {
-          modelPath: "hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf",
-        },
-        // SQLite-backed vector store on the agent's writable workspace.
-        // Upstream MemorySearchStoreSchema is strict and dropped `store.path`
-        // (memory indexes now live in each agent's database), so only the
-        // supported driver + vector keys are valid here. Session memory still
-        // lives in the postgres `frack_memory` schema via DATABASE_URL.
-        store: {
-          driver: "sqlite",
-          vector: { enabled: true },
-        },
-        sync: {
-          watch: true,
-          watchDebounceMs: 2000,
-          onSessionStart: true,
-          onSearch: true,
-        },
-        query: {
-          hybrid: {
-            enabled: true,
-            vectorWeight: 0.7,
-            textWeight: 0.3,
-          },
-        },
-      },
+      // `memorySearch` lived here until 2026-07-26. Upstream moved the owner to
+      // the root as `memory.search` (see puck's config for the migrated form,
+      // including `provider: "openai-compatible"` and the paths below), and
+      // `agents.defaults` no longer accepts it at all.
+      //
+      // It is deliberately absent rather than migrated, because this file has
+      // to load on BOTH images for the duration of the cutover: the pod is
+      // still on the pre-sync image, which rejects root `memory.search`, while
+      // the post-sync image rejects it here. Omitting it is the only form both
+      // accept — the cost is that semantic recall falls back to keyword/FTS
+      // until it is restored. Restore it at the root (not here) once the pod is
+      // confirmed on the post-sync digest; the full block is preserved on the
+      // `config/post-sync-schema` branch. See homelab/PATCHES.md.
     },
     list: [
       {

@@ -25,6 +25,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import JSON5 from "json5";
 import { OpenClawSchema } from "../../src/config/zod-schema.js";
+import { migratePersistedImplicitMainRoster } from "../../src/config/legacy.js";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const target = process.argv[2] ?? resolve(repoRoot, "homelab/config/openclaw.json");
@@ -39,7 +40,16 @@ try {
   process.exit(2);
 }
 
-const result = OpenClawSchema.safeParse(parsed);
+// The gateway does not hand the raw file to the schema: src/config/io.load.ts
+// runs the roster migration between JSON5.parse and validation, which is what
+// lets a legacy `agents.list` array still load. Applying it here too keeps this
+// check faithful to the runtime — without it, `list` reports as an unrecognized
+// key that the gateway would actually have accepted.
+const migrated = migratePersistedImplicitMainRoster(
+  parsed as Record<string, unknown>,
+).config;
+
+const result = OpenClawSchema.safeParse(migrated);
 if (result.success) {
   console.log(`OK   ${target}`);
   process.exit(0);

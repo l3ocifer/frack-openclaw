@@ -165,16 +165,16 @@
       // harness now uses, since OpenClaw inherits the agent's model
       // when no per-runtime override exists.
       workspace: "/root/.openclaw/workspace",
-      // reserveTokens / reserveTokensFloor: matches the proven puck config.
-      // IMPORTANT (verified live 2026-06-25 on OpenClaw 2026.6.10): these
-      // agents.defaults.compaction keys do NOT change the embedded mid-turn
-      // overflow precheck's reserve — the precheck reads its reserve from the
-      // agent settings.json (default 16384) and the precheck still logged
-      // reserveTokens=16384 even with reserveTokens:6000 loaded here. They only
-      // feed the projection / OpenClaw-compaction paths. The lever that actually
-      // makes turns fit is the chat model's contextWindow (see below). Kept at
-      // 6000 for the projection paths and parity with puck.
-      compaction: { mode: "safeguard", reserveTokens: 6000, reserveTokensFloor: 6000 },
+      // 2026-07-26: `reserveTokens` + `reserveTokensFloor` removed. Upstream
+      // deleted the projection-reserve mechanism they fed and put both keys on
+      // the retired-knob list that `openclaw doctor --fix` strips, so the now
+      // strict schema rejects them and crash-loops the gateway (puck hit this
+      // first on the new image). No replacement knob: the reserve is computed
+      // internally. They were never the effective lever anyway — verified live
+      // 2026-06-25 that the mid-turn overflow precheck read its own 16384
+      // reserve from settings.json regardless. The chat model's contextWindow
+      // below is what actually makes turns fit.
+      compaction: { mode: "safeguard" },
       contextPruning: { mode: "cache-ttl", ttl: "1h" },
       maxConcurrent: 4,
       thinkingDefault: "low",
@@ -185,69 +185,73 @@
         every: "30m",
         target: "last",
       },
-      memorySearch: {
-        enabled: true,
-        sources: ["memory", "sessions"],
-        // Multi-graph: own graph (RW), Leo's PKM (R+restricted W),
-        // siblings R-only. Mounted via hostPath on thebeast.
-        extraPaths: [
-          "/data/graphs/frack/pages/ai-memory",
-          "/data/graphs/frack/journals",
-          "/data/graphs/frack/pages",
-          "/data/graphs/leo/pages",
-          "/data/graphs/leo/journals",
-          "/data/graphs/frick/pages/ai-memory",
-          "/data/graphs/frick/journals",
-          "/data/graphs/sancho/pages/ai-memory",
-          "/data/graphs/sancho/journals",
-        ],
-        // Embedding provider — point `remote.baseUrl` at LiteLLM's
-        // OpenAI-compatible /v1 endpoint and use the `embed` model.
-        provider: "remote",
-        remote: {
-          baseUrl: "http://litellm.inference.svc.cluster.local:4000/v1",
-          apiKey: { source: "env", provider: "default", id: "LITELLM_API_KEY" },
-        },
-        model: "embed",
-        fallback: "local",
-        local: {
-          modelPath: "hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf",
-        },
-        // SQLite-backed vector store on the agent's writable workspace.
-        // Upstream MemorySearchStoreSchema is strict and dropped `store.path`
-        // (memory indexes now live in each agent's database), so only the
-        // supported driver + vector keys are valid here. Session memory still
-        // lives in the postgres `frack_memory` schema via DATABASE_URL.
-        store: {
-          driver: "sqlite",
-          vector: { enabled: true },
-        },
-        sync: {
-          watch: true,
-          watchDebounceMs: 2000,
-          onSessionStart: true,
-          onSearch: true,
-        },
-        query: {
-          hybrid: {
-            enabled: true,
-            vectorWeight: 0.7,
-            textWeight: 0.3,
-          },
-        },
-      },
     },
-    list: [
-      {
-        id: "main",
+    // 2026-07-26: was `list: [{ id: "main", ... }]`. Upstream re-keyed the
+    // roster to a record (AgentsSchema is strict and only accepts `defaults` +
+    // `entries`; the id becomes the key). The array form still loads via a
+    // doctor migration ("Moved agents.list to keyed agents.entries"), but
+    // writing the canonical shape keeps the seeded ConfigMap from needing a
+    // migration pass on every boot.
+    entries: {
+      main: {
         default: true,
         identity: {
           name: "Frack",
           theme: "business operator — runs the 12 production apps + customer ops + social + finance",
           emoji: "💼",
         },
-      }
-    ],
+      },
+    },
+  },
+
+  // Memory search / embeddings.
+  //
+  // 2026-07-26: this was `agents.defaults.memorySearch`. Upstream moved the
+  // owner to ROOT `memory.search` (per-agent overrides now live at
+  // agents.entries.<id>.memory.search, and `agents.defaults` no longer accepts
+  // it at all) and made the object strict, so the old placement crash-looped
+  // the gateway with "Unrecognized key" — puck hit this first on the new image.
+  // Three sub-blocks are gone with no replacement and were dropped rather than
+  // translated: `store.driver` (sqlite is the only driver), the whole `sync`
+  // block (watch / debounce / onSessionStart / onSearch are no longer
+  // configurable — indexing is driven internally), and `query.hybrid` (hybrid
+  // retrieval is always on; `query` now only takes maxResults and minScore).
+  memory: {
+    search: {
+      enabled: true,
+      sources: ["memory", "sessions"],
+      // Multi-graph: own graph (RW), Leo's PKM (R+restricted W),
+      // siblings R-only. Mounted via hostPath on thebeast.
+      extraPaths: [
+        "/data/graphs/frack/pages/ai-memory",
+        "/data/graphs/frack/journals",
+        "/data/graphs/frack/pages",
+        "/data/graphs/leo/pages",
+        "/data/graphs/leo/journals",
+        "/data/graphs/frick/pages/ai-memory",
+        "/data/graphs/frick/journals",
+        "/data/graphs/sancho/pages/ai-memory",
+        "/data/graphs/sancho/journals",
+      ],
+      // Embedding provider — point `remote.baseUrl` at LiteLLM's
+      // OpenAI-compatible /v1 endpoint and use the `embed` model.
+      provider: "remote",
+      remote: {
+        baseUrl: "http://litellm.inference.svc.cluster.local:4000/v1",
+        apiKey: { source: "env", provider: "default", id: "LITELLM_API_KEY" },
+      },
+      model: "embed",
+      fallback: "local",
+      local: {
+        modelPath: "hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf",
+      },
+      // Vector store lives in the agent's database; `store.path` was dropped
+      // upstream earlier and `store.driver` now too. Session memory still
+      // lives in the postgres `frack_memory` schema via DATABASE_URL.
+      store: {
+        vector: { enabled: true },
+      },
+    },
   },
 
   tools: {

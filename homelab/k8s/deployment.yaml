@@ -190,6 +190,36 @@ spec:
             - { name: state,           mountPath: /openclaw-state-root, subPath: openclaw }
             - { name: persona,         mountPath: /persona,             readOnly: true }
             - { name: openclaw-config, mountPath: /openclaw-config-src, readOnly: true }
+        # Run upstream's own state migrator before the gateway boots.
+        #
+        # WHY: OpenClaw versions its persisted state, and the state PVC outlives
+        # the image. When an upstream sync bumps a schema the gateway refuses to
+        # use the old state and says "run openclaw doctor --fix" — but doctor
+        # declines to touch the session store while the gateway owns the state
+        # directory, so the fix cannot be applied from inside the running pod.
+        # Doing it by hand also means scaling the Deployment to 0, which ArgoCD
+        # selfHeal immediately reverts. An initContainer is the only place the
+        # migration can run with the state dir quiet and still be declarative.
+        #
+        # This class of failure has bitten twice: the media/session schema bump
+        # (schema version 11) and then the legacy exec-approvals file, both of
+        # which left the agent up but degraded.
+        #
+        # `|| true` on purpose: doctor also reports advisory findings that are
+        # not migrations (no command owner configured, missing transcript) and
+        # exits non-zero for them. Blocking boot on advice would be worse than
+        # the problem. A migration that genuinely fails still surfaces — the
+        # gateway refuses to start and this container's log names the cause.
+        - name: doctor-fix
+          image: git.leopaska.xyz/leo/frack-openclaw:homelab
+          command: ["sh", "-c"]
+          args:
+            - |
+              node /opt/openclaw/openclaw.mjs doctor --fix 2>&1 || true
+          volumeMounts:
+            - { name: state, mountPath: /root/.openclaw,                subPath: openclaw }
+            - { name: state, mountPath: /root/.openclaw/workspace-rw,   subPath: openclaw/workspace }
+            - { name: state, mountPath: /root/.openclaw/runtime-config, subPath: openclaw/runtime-config }
       containers:
         - name: openclaw
           image: git.leopaska.xyz/leo/frack-openclaw:homelab

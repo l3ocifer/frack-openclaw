@@ -184,6 +184,38 @@ To finish the cutover, in this order:
 4. Re-run the validator, then clear the seed marker (next section) so the new
    ConfigMap actually reaches the gateway.
 
+### State migrations belong in an initContainer, not in your hands
+
+The state PVC outlives the image, and OpenClaw versions what it persists. So an
+upstream sync that bumps a state schema leaves the agent running but degraded,
+telling you to run `openclaw doctor --fix`. Doing that turns out to be awkward
+in exactly the wrong way:
+
+- Run it inside the live pod and doctor declines the session-store work —
+  _"Gateway or another SQLite maintenance command owns the state directory"_ —
+  after happily applying the harmless parts, so it looks like it worked.
+- Stop the gateway first by scaling the Deployment to 0 and ArgoCD's `selfHeal`
+  scales it straight back up. Patching `syncPolicy.automated` off does not help
+  either: the Application itself is managed by the root app-of-apps, which
+  restores the spec within seconds.
+
+The fix is a `doctor-fix` initContainer that runs upstream's migrator before the
+gateway starts, when the state directory is quiet. It is declarative, idempotent,
+survives selfHeal, and puts the migration log somewhere findable.
+
+It ends in `|| true` deliberately. Doctor mixes migrations with advisory findings
+(no command owner configured, missing main transcript) and exits non-zero for
+those too; blocking boot on advice would be worse than the problem. A migration
+that genuinely fails still surfaces, because the gateway then refuses to start
+and the initContainer log names the cause.
+
+Its image is the same `:homelab` tag as the gateway so ArgoCD Image Updater pins
+both to one digest — the migrator must never be a different version than the
+runtime it is migrating for.
+
+Two migrations have needed this so far: the media/session schema bump (schema
+version 11) and the legacy `exec-approvals.json` file.
+
 ### The re-seed trap: a ConfigMap change that never reaches the gateway
 
 The seed init container compares the ConfigMap's sha256 against a marker file at

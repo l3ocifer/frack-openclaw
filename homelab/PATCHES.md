@@ -74,6 +74,80 @@ three changes were applied here pre-emptively:
   migration, so this one was not fatal; written canonically anyway so the seeded
   ConfigMap does not need a migration pass on every boot.
 
+Separately, `memory.search.provider` was `"remote"` — not fatal, and not even a
+schema error, because `provider` is a free-form string. But `"remote"` is not an
+embedding-provider _id_, so it resolved to nothing and the gateway logged
+"no loaded plugin registered a memory embedding provider that can serve
+'remote'. Semantic memory recall will fall back to keyword/FTS-only search" —
+embeddings had been silently off. The correct id is `openai-compatible` (the
+core adapter, registered unconditionally rather than plugin-gated); it prefers
+the explicit `remote` block over any `models.providers` entry, so LiteLLM stays
+the embedding endpoint. **The validator cannot catch this class of bug** — grep
+the gateway's first 30 log lines for warnings after any sync.
+
+**Status: reverted on main, staged on branch `config/post-sync-schema`.**
+
+Why Frack did not crash while Puck did: Frack is still running a _pre-sync_
+image. Both report `OpenClaw 2026.7.2`, so the version string is not a reliable
+discriminator — the digests differ. Puck's post-sync image was published at
+06:14Z; Frack's rebuild (merge `9b2f1c34e12`, 01:47) had not produced an image
+by 07:30Z, and `argocd-image-updater` last moved Frack's digest at 01:30Z,
+_before_ the merge. These builds are slow (Puck's took ~5.5 h from merge to
+published digest).
+
+Applying the migration ahead of the image took Frack down: the old image rejects
+the new shape exactly as symmetrically as the new image rejects the old one.
+
+```
+Gateway failed to start: Invalid config at .../openclaw.json:
+agents: Unrecognized key: "entries"
+memory: Unrecognized key: "search"
+```
+
+There is no config that satisfies both images (short of dropping memory search
+entirely), so **this migration must land after the new image is published, not
+before**. Sequence for re-landing:
+
+1. Confirm the running image accepts the new shape — the deployed digest must
+   differ from `sha256:6274b78d…`, or check `argocd-image-updater` logs for a
+   "Setting new image" line for `frack-openclaw` dated after the sync merge.
+2. `git merge config/post-sync-schema` and push.
+3. Sync the app, then delete the pod so the seed init container re-copies (a
+   `rollout restart` is not enough on its own — the seed is hash-gated).
+
+More generally: do not treat "the pod is healthy" as evidence that the committed
+config is valid, and do not treat a validated config as safe to deploy until the
+image built from the same tree is actually running.
+
+## Upstream sync runbook: persisted state migrations
+
+Config is not the only thing that drifts. The state PVC outlives every image, so
+an upstream release that bumps a database schema will refuse to boot:
+
+```
+Gateway failed to start: OpenClaw agent database
+/root/.openclaw/agents/main/agent/openclaw-agent.sqlite uses schema version 11;
+run openclaw doctor --fix to migrate persisted media before using it.
+```
+
+There is no scoped migration flag — `openclaw doctor --fix` is the only path,
+it takes ~2 minutes, and it rewrites the runtime config copy (stripping JSON5
+comments, which is harmless: the ConfigMap in this repo is the source of truth).
+It is deliberately NOT wired into an init container, because it would add two
+minutes and a config rewrite to every pod restart in exchange for a fault that
+only occurs on an upstream schema bump.
+
+Because the crash-looping pod cannot be exec'd into, run it against a paused
+copy of the pod, which mounts the same PVC on the same node:
+
+```sh
+POD=$(kubectl get pods -n agents-shared -l app.kubernetes.io/name=frack -o name | head -1 | cut -d/ -f2)
+kubectl debug -n agents-shared "$POD" --copy-to=frack-migrate --container=openclaw -- sh -c 'sleep 3600'
+kubectl exec -n agents-shared frack-migrate -c openclaw -- node /opt/openclaw/openclaw.mjs doctor --fix
+kubectl delete pod -n agents-shared frack-migrate
+kubectl delete pod -n agents-shared "$POD"   # fresh pod re-seeds and starts clean
+```
+
 ## Resolving an upstream merge conflict
 
 When `git merge upstream/main` reports a conflict in a file we patch:

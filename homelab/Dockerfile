@@ -24,7 +24,7 @@
 # on this cluster's egress IP, so a burst of concurrent builds fails here
 # with `toomanyrequests` and nothing gets pushed — which is indistinguishable
 # from "the build never ran" unless you go read the Actions log.
-FROM public.ecr.aws/docker/library/node:24-bookworm AS build
+FROM public.ecr.aws/docker/library/node:24.18.0-bookworm AS build
 
 # Bun for build scripts (mirrors upstream)
 RUN curl --retry 5 --retry-all-errors --retry-delay 2 -fsSL https://bun.sh/install | bash
@@ -75,7 +75,7 @@ RUN set -eu; \
 RUN node scripts/check-package-dist-imports.mjs /app
 
 # ─── Stage 2: runtime ────────────────────────────────────────────────
-FROM public.ecr.aws/docker/library/node:24-bookworm-slim
+FROM public.ecr.aws/docker/library/node:24.18.0-bookworm-slim
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \

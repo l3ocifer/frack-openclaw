@@ -60,7 +60,7 @@
     "ws": "8.21.1"
   },
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=22.23.1"
   },
   "publishConfig": {
     "access": "public"

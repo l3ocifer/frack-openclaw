@@ -47,8 +47,27 @@ RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
 
 COPY . .
 
-RUN pnpm build:docker || pnpm build || true
+RUN pnpm build:docker || pnpm build
 RUN pnpm ui:build || true
+
+# Workspace packages (packages/*) are symlinked into node_modules by pnpm.
+# The runtime stage copies node_modules but NOT the packages/ tree, so any
+# workspace symlink left in place ships dangling and the gateway dies at
+# startup with e.g. "Cannot find module '@openclaw/ai/internal/openai'"
+# (2026-07-25 outage, seen on puck). Upstream's root Dockerfile materializes
+# node_modules/@openclaw/ai the same way in its runtime-assets stage.
+RUN set -eu; \
+    for link in /app/node_modules/@openclaw/*; do \
+      [ -L "$link" ] || continue; \
+      target="$(readlink -f "$link")"; \
+      case "$target" in /app/node_modules/*) continue ;; esac; \
+      tmp="$(mktemp -d)"; \
+      cp -a "$target" "$tmp/pkg"; \
+      rm "$link"; \
+      mv "$tmp/pkg" "$link"; \
+      rmdir "$tmp"; \
+    done
+RUN node scripts/check-package-dist-imports.mjs /app
 
 # ─── Stage 2: runtime ────────────────────────────────────────────────
 FROM node:24-bookworm-slim
@@ -115,6 +134,15 @@ COPY --from=build /app/src/agents/templates /opt/openclaw/src/agents/templates
 # prior build-and-push run was preempted by a concurrent fleet fan-out.
 RUN ln -sf /opt/openclaw/openclaw.mjs /usr/local/bin/openclaw \
  && chmod 755 /opt/openclaw/openclaw.mjs
+
+# Fail the build if the copied node_modules contains dangling symlinks
+# (i.e. a workspace package the materialization step above missed).
+RUN broken="$(find /opt/openclaw/node_modules -xtype l)"; \
+    if [ -n "$broken" ]; then \
+      echo "dangling symlinks in runtime node_modules:" >&2; \
+      echo "$broken" >&2; \
+      exit 1; \
+    fi
 
 # Workspace skeleton — overlaid by mounted ConfigMaps + PVC at runtime
 WORKDIR /opt/openclaw

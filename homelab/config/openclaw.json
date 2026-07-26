@@ -185,19 +185,8 @@
         every: "30m",
         target: "last",
       },
-      // `memorySearch` lived here until 2026-07-26. Upstream moved the owner to
-      // the root as `memory.search` (see puck's config for the migrated form,
-      // including `provider: "openai-compatible"` and the paths below), and
-      // `agents.defaults` no longer accepts it at all.
-      //
-      // It is deliberately absent rather than migrated, because this file has
-      // to load on BOTH images for the duration of the cutover: the pod is
-      // still on the pre-sync image, which rejects root `memory.search`, while
-      // the post-sync image rejects it here. Omitting it is the only form both
-      // accept — the cost is that semantic recall falls back to keyword/FTS
-      // until it is restored. Restore it at the root (not here) once the pod is
-      // confirmed on the post-sync digest; the full block is preserved on the
-      // `config/post-sync-schema` branch. See homelab/PATCHES.md.
+      // `memorySearch` lived here until 2026-07-26; upstream moved the owner to
+      // the root as `memory.search`, which is where it now lives in this file.
     },
     list: [
       {
@@ -210,6 +199,67 @@
         },
       }
     ],
+  },
+
+  // Memory search / embeddings.
+  //
+  // 2026-07-26: this was `agents.defaults.memorySearch`. Upstream moved the
+  // owner to ROOT `memory.search` (per-agent overrides now live at
+  // agents.entries.<id>.memory.search, and `agents.defaults` no longer accepts
+  // it at all) and made the object strict, so the old placement crash-looped
+  // the gateway with "Unrecognized key" — puck hit this first on the new image.
+  // Three sub-blocks are gone with no replacement and were dropped rather than
+  // translated: `store.driver` (sqlite is the only driver), the whole `sync`
+  // block (watch / debounce / onSessionStart / onSearch are no longer
+  // configurable — indexing is driven internally), and `query.hybrid` (hybrid
+  // retrieval is always on; `query` now only takes maxResults and minScore).
+  memory: {
+    search: {
+      enabled: true,
+      sources: ["memory", "sessions"],
+      // Multi-graph: own graph (RW), Leo's PKM (R+restricted W),
+      // siblings R-only. Mounted via hostPath on thebeast.
+      extraPaths: [
+        "/data/graphs/frack/pages/ai-memory",
+        "/data/graphs/frack/journals",
+        "/data/graphs/frack/pages",
+        "/data/graphs/leo/pages",
+        "/data/graphs/leo/journals",
+        "/data/graphs/frick/pages/ai-memory",
+        "/data/graphs/frick/journals",
+        "/data/graphs/sancho/pages/ai-memory",
+        "/data/graphs/sancho/journals",
+      ],
+      // Embedding provider — point `remote.baseUrl` at LiteLLM's
+      // OpenAI-compatible /v1 endpoint and use the `embed` model.
+      //
+      // `provider` is an embedding-provider ID, and "remote" is no longer one.
+      // It loaded silently but resolved to nothing, and the gateway logged
+      // "no loaded plugin registered a memory embedding provider that can serve
+      // 'remote'. Semantic memory recall will fall back to keyword/FTS-only
+      // search" — i.e. embeddings were quietly off (caught on puck).
+      // "openai-compatible" is the core adapter (registered unconditionally,
+      // not plugin-gated), and it prefers the explicit `remote` block below over
+      // any models.providers entry, so LiteLLM stays the embedding endpoint.
+      provider: "openai-compatible",
+      remote: {
+        baseUrl: "http://litellm.inference.svc.cluster.local:4000/v1",
+        apiKey: { source: "env", provider: "default", id: "LITELLM_API_KEY" },
+      },
+      model: "embed",
+      // "local" still resolves (llama-cpp plugin) — the gateway warned about
+      // `provider` only, not `fallback`.
+      fallback: "local",
+      local: {
+        modelPath: "hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf",
+      },
+      // Vector store lives in the agent's database; `store.path` was dropped
+      // upstream earlier and `store.driver` now too. Session memory still
+      // lives in the postgres `frack_memory` schema via DATABASE_URL.
+      store: {
+        vector: { enabled: true },
+      },
+    },
   },
 
   tools: {

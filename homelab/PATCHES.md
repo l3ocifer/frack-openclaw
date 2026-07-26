@@ -168,7 +168,12 @@ the retired keys and not add the replacements yet** — which is what
 `homelab/config/openclaw.json` now does. The cost is that semantic recall falls
 back to keyword/FTS until root `memory.search` is restored.
 
-To finish the cutover, in this order:
+**Closed 2026-07-26:** the post-sync image published (digest `4d33130b`), and
+`memory.search` is back at the root with `provider: "openai-compatible"`. The
+steps below are kept because they are the general recipe for the next time an
+image and a config have to cross over.
+
+The original order was:
 
 1. Confirm the pod is actually on the post-sync digest — compare the `:homelab`
    tag's digest to `kubectl get deploy frack -o jsonpath='{...containers[0].image}'`.

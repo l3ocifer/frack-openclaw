@@ -1142,8 +1142,8 @@ importers:
         specifier: 14.3.0
         version: 14.3.0
       matrix-js-sdk:
-        specifier: 41.9.0-rc.0
-        version: 41.9.0-rc.0
+        specifier: 42.0.0
+        version: 42.0.0
       music-metadata:
         specifier: 11.14.0
         version: 11.14.0(supports-color@10.2.2)
@@ -7079,8 +7079,8 @@ packages:
   matrix-events-sdk@0.0.1:
     resolution: {integrity: sha512-1QEOsXO+bhyCroIe2/A5OwaxHvBm7EsSQ46DEDn8RBIfQwN5HWBpFvyWWR4QY0KHPPnnJdI99wgRiAl7Ad5qaA==}
 
-  matrix-js-sdk@41.9.0-rc.0:
-    resolution: {integrity: sha512-W3KPvaRhmvZxsnOrpsnpyboirfjQDaIZ8K0aJrw5wdkD9YSK02NutaFRG9UFAEOolG0ythj6dQIeUS/icZKzCQ==}
+  matrix-js-sdk@42.0.0:
+    resolution: {integrity: sha512-i3SnhdkgnKA7O0iVlaZCo96GGaIZ0FGD93LQ34N2+Hj/kaC7Ffbch7OEkwYA//mYGCKRAMxduBacoy8WscfqVw==}
     engines: {node: '>=22.0.0'}
 
   matrix-widget-api@1.17.0:
@@ -7431,10 +7431,6 @@ packages:
 
   ogg-opus-decoder@1.7.3:
     resolution: {integrity: sha512-w47tiZpkLgdkpa+34VzYD8mHUj8I9kfWVZa82mBbNwDvB1byfLXSSzW/HxA4fI3e9kVlICSpXGFwMLV1LPdjwg==}
-
-  oidc-client-ts@3.5.0:
-    resolution: {integrity: sha512-l2q8l9CTCTOlbX+AnK4p3M+4CEpKpyQhle6blQkdFhm0IsBqsxm15bYaSa11G7pWdsYr6epdsRZxJpCyCRbT8A==}
-    engines: {node: '>=18'}
 
   on-exit-leak-free@2.1.2:
     resolution: {integrity: sha512-0eJJY6hXLGf1udHwfNftBqH+g73EU4B504nZeKpz1sYRKafAghwxEJunB2O7rDZkL4PGfsMVnTXZ2EjibbqcsA==}
@@ -14163,18 +14159,16 @@ snapshots:
 
   matrix-events-sdk@0.0.1: {}
 
-  matrix-js-sdk@41.9.0-rc.0:
+  matrix-js-sdk@42.0.0:
     dependencies:
       '@babel/runtime': 8.0.0
       '@matrix-org/matrix-sdk-crypto-wasm': 18.3.1
       another-json: 0.2.0
       bs58: 6.0.0
       content-type: 2.0.0
-      jwt-decode: 4.0.0
       loglevel: 1.9.2
       matrix-events-sdk: 0.0.1
       matrix-widget-api: 1.17.0
-      oidc-client-ts: 3.5.0
       p-retry: 8.0.0
       sdp-transform: 3.0.0
       unhomoglyph: 1.0.6
@@ -14751,10 +14745,6 @@ snapshots:
       '@wasm-audio-decoders/opus-ml': 0.0.2
       codec-parser: 2.5.0
       opus-decoder: 0.7.11
-
-  oidc-client-ts@3.5.0:
-    dependencies:
-      jwt-decode: 4.0.0
 
   on-exit-leak-free@2.1.2: {}
 

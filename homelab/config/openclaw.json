@@ -235,12 +235,23 @@
       ],
       // Embedding provider — point `remote.baseUrl` at LiteLLM's
       // OpenAI-compatible /v1 endpoint and use the `embed` model.
-      provider: "remote",
+      //
+      // `provider` is an embedding-provider ID, and "remote" is no longer one.
+      // It loaded silently but resolved to nothing, and the gateway logged
+      // "no loaded plugin registered a memory embedding provider that can serve
+      // 'remote'. Semantic memory recall will fall back to keyword/FTS-only
+      // search" — i.e. embeddings were quietly off (caught on puck).
+      // "openai-compatible" is the core adapter (registered unconditionally,
+      // not plugin-gated), and it prefers the explicit `remote` block below over
+      // any models.providers entry, so LiteLLM stays the embedding endpoint.
+      provider: "openai-compatible",
       remote: {
         baseUrl: "http://litellm.inference.svc.cluster.local:4000/v1",
         apiKey: { source: "env", provider: "default", id: "LITELLM_API_KEY" },
       },
       model: "embed",
+      // "local" still resolves (llama-cpp plugin) — the gateway warned about
+      // `provider` only, not `fallback`.
       fallback: "local",
       local: {
         modelPath: "hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf",

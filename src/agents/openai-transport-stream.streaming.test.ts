@@ -6,6 +6,7 @@ import {
   classifyAssistantFailoverReason,
   formatUserFacingAssistantErrorText,
 } from "./embedded-agent-helpers.js";
+import { streamWithIdleTimeout } from "./embedded-agent-runner/run/llm-idle-timeout.js";
 import {
   parseTransportChunkUsage,
   type CapturedStreamEvent,
@@ -180,6 +181,111 @@ describe("openai transport stream", () => {
       });
     }
   });
+
+  it.each(["reasoning_content", "reasoning"] as const)(
+    "keeps hidden local %s streams alive beyond the model idle timeout",
+    async (reasoningField) => {
+      const reasoningChunkCount = 5;
+      const reasoningChunkDelayMs = 35;
+      const idleTimeoutMs = 100;
+      const server = createServer((req, res) => {
+        req.resume();
+        req.on("end", () => {
+          res.writeHead(200, {
+            "content-type": "text/event-stream; charset=utf-8",
+            "cache-control": "no-cache",
+            connection: "keep-alive",
+          });
+
+          let reasoningChunksSent = 0;
+          const writeNextChunk = () => {
+            if (res.destroyed) {
+              return;
+            }
+            if (reasoningChunksSent < reasoningChunkCount) {
+              reasoningChunksSent += 1;
+              const reasoningChunk = {
+                id: "chatcmpl-local-reasoning",
+                object: "chat.completion.chunk",
+                created: 1,
+                model: "nemotron-local",
+                choices: [
+                  {
+                    index: 0,
+                    delta: { [reasoningField]: "private reasoning" },
+                    finish_reason: null,
+                  },
+                ],
+              };
+              res.write(`data: ${JSON.stringify(reasoningChunk)}\n\n`);
+              setTimeout(writeNextChunk, reasoningChunkDelayMs);
+              return;
+            }
+
+            res.write(
+              `data: ${JSON.stringify(makeCompletionsChunk({ role: "assistant", content: "OK" }))}\n\n`,
+            );
+            res.write(`data: ${JSON.stringify(makeCompletionsChunk({}, "stop"))}\n\n`);
+            res.write("data: [DONE]\n\n");
+            res.end();
+          };
+
+          writeNextChunk();
+        });
+      });
+
+      await new Promise<void>((resolve) => {
+        server.listen(0, "127.0.0.1", resolve);
+      });
+      try {
+        const address = server.address();
+        if (!address || typeof address === "string") {
+          throw new Error("Missing loopback server address");
+        }
+        const model = makeCompletionsModel({
+          id: "nemotron-local",
+          name: "Local Nemotron",
+          provider: "inference",
+          baseUrl: `http://127.0.0.1:${address.port}/v1`,
+          reasoning: false,
+        });
+        const onIdleTimeout = vi.fn();
+        const streamFn = streamWithIdleTimeout(
+          createOpenAICompletionsTransportStreamFn(),
+          idleTimeoutMs,
+          onIdleTimeout,
+        );
+        const stream = streamFn(
+          model,
+          {
+            systemPrompt: "system",
+            messages: [{ role: "user", content: "Reply OK", timestamp: Date.now() }],
+            tools: [],
+          } as never,
+          { apiKey: "test-key" } as never,
+        );
+
+        let text = "";
+        let thinking = "";
+        for await (const event of stream as AsyncIterable<{ type: string; delta?: string }>) {
+          if (event.type === "text_delta") {
+            text += event.delta ?? "";
+          }
+          if (event.type === "thinking_delta") {
+            thinking += event.delta ?? "";
+          }
+        }
+
+        expect(text).toBe("OK");
+        expect(thinking).toBe("");
+        expect(onIdleTimeout).not.toHaveBeenCalled();
+      } finally {
+        await new Promise<void>((resolve, reject) => {
+          server.close((error) => (error ? reject(error) : resolve()));
+        });
+      }
+    },
+  );
 
   it("refuses ModelStudio chat streams with no user or assistant payload turns", async () => {
     const model = makeCompletionsModel({
@@ -992,6 +1098,7 @@ describe("openai transport stream", () => {
         { type: "response.output_item.added", item: { type: "message" } },
         { type: "response.output_text.delta", delta: "a" },
         { type: "response.output_text.delta", delta: "b" },
+        { type: "response.completed", response: { id: "resp_text", status: "completed" } },
       ]),
       output,
       { push: (event) => events.push(event as CapturedStreamEvent) },
@@ -1057,7 +1164,6 @@ describe("openai transport stream", () => {
         id: "call_read|fc_read",
         name: "read",
         arguments: { path: "docs/nodes/computer-use.md" },
-        partialJson: streamedArguments,
       },
     ]);
     expect(events.map((event) => event.type)).toEqual([
@@ -1082,6 +1188,7 @@ describe("openai transport stream", () => {
             type: "response.output_item.done",
             item: { type: "function_call", name: "computer", arguments: "{}" },
           },
+          { type: "response.completed", response: { id: "resp_idless", status: "completed" } },
         ]),
         output,
         { push: (event) => events.push(event as CapturedStreamEvent) },
@@ -1148,7 +1255,6 @@ describe("openai transport stream", () => {
         id: expect.stringMatching(/^call_[0-9a-f]{24}$/),
         name: "computer",
         arguments: { action: "screenshot" },
-        partialJson: '{"action":"screenshot"}',
       },
     ]);
     const toolEvents = events.filter((event) => event.type?.startsWith("toolcall_")) as Array<{
@@ -1338,6 +1444,10 @@ describe("openai transport stream", () => {
             status: "completed",
           },
         },
+        {
+          type: "response.completed",
+          response: { id: "resp_interleaved_calls", status: "completed" },
+        },
       ]),
       output,
       { push: (event) => events.push(event as (typeof events)[number]) },
@@ -1350,14 +1460,12 @@ describe("openai transport stream", () => {
         id: "call_click|fc_click",
         name: "computer",
         arguments: { action: "left_click", coordinate: [10, 20] },
-        partialJson: '{"action":"left_click","coordinate":[10,20]}',
       },
       {
         type: "toolCall",
         id: "call_type|fc_type",
         name: "computer",
         arguments: { action: "type", text: "hello" },
-        partialJson: '{"action":"type","text":"hello"}',
       },
     ]);
     expect(
@@ -1616,14 +1724,12 @@ describe("openai transport stream", () => {
         id: "call_first_unindexed|fc_first_unindexed",
         name: "computer",
         arguments: { slot: 1 },
-        partialJson: '{"slot":1}',
       },
       {
         type: "toolCall",
         id: "call_second_unindexed|fc_second_unindexed",
         name: "computer",
         arguments: { slot: 2 },
-        partialJson: '{"slot":2}',
       },
     ]);
     expect(
@@ -1752,14 +1858,12 @@ describe("openai transport stream", () => {
         id: "call_recovered_first|fc_recovered_first",
         name: "read",
         arguments: { path: "README.md" },
-        partialJson: '{"path":"README.md"}',
       },
       {
         type: "toolCall",
         id: "call_recovered_second|fc_recovered_second",
         name: "write",
         arguments: { path: "README.md", text: "ok" },
-        partialJson: '{"path":"README.md","text":"ok"}',
       },
     ]);
     expect(events.filter((event) => event.type === "toolcall_end")).toHaveLength(2);
@@ -1869,6 +1973,10 @@ describe("openai transport stream", () => {
             arguments: '{"slot":1}',
           },
         },
+        {
+          type: "response.completed",
+          response: { id: "resp_omitted_suffix", status: "completed" },
+        },
       ]),
       output,
       { push: (event) => events.push(event as (typeof events)[number]) },
@@ -1939,6 +2047,10 @@ describe("openai transport stream", () => {
             arguments: '{"slot":0}',
           },
         },
+        {
+          type: "response.completed",
+          response: { id: "resp_omitted_completions", status: "completed" },
+        },
       ]),
       output,
       { push: (event) => events.push(event as (typeof events)[number]) },
@@ -1995,6 +2107,10 @@ describe("openai transport stream", () => {
             name: "computer",
             arguments: '{"slot":0}',
           },
+        },
+        {
+          type: "response.completed",
+          response: { id: "resp_identity_mismatch", status: "completed" },
         },
       ]),
       output,
@@ -2060,6 +2176,10 @@ describe("openai transport stream", () => {
             name: "computer",
             arguments: '{"slot":1}',
           },
+        },
+        {
+          type: "response.completed",
+          response: { id: "resp_sequential_unindexed", status: "completed" },
         },
       ]),
       output,

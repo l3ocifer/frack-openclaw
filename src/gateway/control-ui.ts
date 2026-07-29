@@ -75,6 +75,7 @@ import {
   sendControlUiHtmlBody,
   serveControlUiAsset,
 } from "./control-ui-static.js";
+import { resolveByteResponse, writeByteHeaders } from "./http-byte-range.js";
 import { buildMissingScopeForbiddenBody, sendGatewayAuthFailure } from "./http-common.js";
 import {
   getBearerToken,
@@ -643,8 +644,23 @@ export async function handleControlUiAssistantMediaRequest(
       buildAssistantMediaContentDisposition(filename, contentType),
     );
     res.setHeader("Cache-Control", "no-cache");
-    res.setHeader("Content-Length", String(opened.stat.size));
-    const stream = opened.handle.createReadStream({ start: 0, autoClose: false });
+    const byteResponse = resolveByteResponse({
+      file: opened.stat,
+      method: req.method,
+      rangeHeader: req.headers.range,
+      ifRangeHeader: req.headers["if-range"],
+    });
+    writeByteHeaders(res, byteResponse);
+    if (req.method === "HEAD" || byteResponse.kind === "unsatisfiable" || opened.stat.size === 0) {
+      await closeOpenedHandle();
+      res.end();
+      return true;
+    }
+    const stream = opened.handle.createReadStream({
+      start: byteResponse.kind === "partial" ? byteResponse.range.start : 0,
+      end: byteResponse.kind === "partial" ? byteResponse.range.end : opened.stat.size - 1,
+      autoClose: false,
+    });
     const finishClose = () => {
       void closeOpenedHandle();
     };
@@ -966,12 +982,15 @@ export async function handleControlUiHttpRequest(
       return true;
     }
     const config = opts?.config;
-    const identity = config
+    const resolvedIdentity = config
       ? resolveAssistantIdentity({ cfg: config, agentId: opts?.agentId })
-      : DEFAULT_ASSISTANT_IDENTITY;
-    const avatarProjection = config
-      ? resolveGatewayAssistantAvatar({ cfg: config, identity })
-      : { avatar: identity.avatar, resolution: null };
+      : undefined;
+    const identity = resolvedIdentity ?? DEFAULT_ASSISTANT_IDENTITY;
+    const assistantAgentId = resolvedIdentity?.agentId;
+    const avatarProjection =
+      config && resolvedIdentity
+        ? resolveGatewayAssistantAvatar({ cfg: config, identity: resolvedIdentity })
+        : { avatar: identity.avatar, resolution: null };
     const avatarMeta = controlUiAvatarResolutionMeta(avatarProjection.resolution);
     sendJson(res, 200, {
       basePath,
@@ -980,10 +999,10 @@ export async function handleControlUiHttpRequest(
       assistantAvatarSource: avatarMeta.avatarSource,
       assistantAvatarStatus: avatarMeta.avatarStatus,
       assistantAvatarReason: avatarMeta.avatarReason,
-      assistantAgentId: identity.agentId,
+      ...(assistantAgentId ? { assistantAgentId } : {}),
       serverVersion: resolveRuntimeServiceVersion(process.env),
       devGitBranch: (await resolveDevInstallGitBranch()) ?? undefined,
-      localMediaPreviewRoots: [...getAgentScopedMediaLocalRoots(config ?? {}, identity.agentId)],
+      localMediaPreviewRoots: [...getAgentScopedMediaLocalRoots(config ?? {}, assistantAgentId)],
       embedSandbox:
         config?.gateway?.controlUi?.embedSandbox === "trusted"
           ? "trusted"

@@ -6,7 +6,6 @@ import type {
 } from "../../../packages/gateway-protocol/src/index.ts";
 import type { GatewaySessionRow } from "../api/types.ts";
 import type { NavigationRouteId } from "../app-navigation.ts";
-import { pathForRoute } from "../app-route-paths.ts";
 import type { ApplicationNavigationOptions } from "../app/context.ts";
 import { t } from "../i18n/index.ts";
 import type { CatalogSessionKey } from "../lib/sessions/catalog-key.ts";
@@ -16,16 +15,18 @@ import {
   groupCatalogSessionsByProject,
   type CatalogProjectGrouping,
 } from "../lib/sessions/catalog-project-grouping.ts";
-import { searchForSession } from "../lib/sessions/index.ts";
+import { sessionNavigationTarget } from "../lib/sessions/route-navigation.ts";
 import type { NewSessionTarget } from "../pages/new-session/location.ts";
 import { shouldHandleNavigationClick } from "./app-sidebar-nav-menus.ts";
 import {
   formatSidebarTimestamp,
   type CatalogBackingSessionDisplay,
   type CatalogSessionMenuRequest,
+  visibleCatalogHosts,
 } from "./app-sidebar-session-catalogs.ts";
 import { renderSidebarSessionSectionHeader } from "./app-sidebar-session-section-header.ts";
 import { icons } from "./icons.ts";
+import { hasProviderBrandIcon, renderProviderBrandIcon } from "./provider-icon.ts";
 import { renderSessionRowBadges } from "./session-row-badges.ts";
 
 type SessionCatalogGroupsParams = {
@@ -34,6 +35,7 @@ type SessionCatalogGroupsParams = {
   basePath: string;
   routeSessionKey: string;
   newSessionAgentId: string;
+  mainKey: string;
   collapsedSections: ReadonlySet<string>;
   loadingMoreCatalogIds: ReadonlySet<string>;
   projectGrouping: CatalogProjectGrouping;
@@ -118,15 +120,8 @@ export function renderSessionCatalogGroups(params: SessionCatalogGroupsParams) {
     const sectionId = `catalog:${catalog.id}`;
     const collapsed = params.collapsedSections.has(sectionId);
     const hosts = catalog.hosts;
-    const visibleHosts: SessionCatalogHost[] = [];
-    for (const host of hosts) {
-      const sessions = host.sessions.filter(
-        (session) => !params.creatorId || session.createdActor?.id === params.creatorId,
-      );
-      if (sessions.length > 0) {
-        visibleHosts.push(sessions.length === host.sessions.length ? host : { ...host, sessions });
-      }
-    }
+    // Catalog providers own host identity; the sidebar only removes hosts with no visible rows.
+    const visibleHosts = visibleCatalogHosts(hosts, params.creatorId);
     const rows = visibleHosts.flatMap((host) =>
       host.sessions.map((session) => ({ host, session })),
     );
@@ -147,7 +142,7 @@ export function renderSessionCatalogGroups(params: SessionCatalogGroupsParams) {
       return nothing;
     }
     const errorMessage = errorMessages.join("; ");
-    const errorHelp = `${errorMessage}. Configure native thread discovery in Settings > Automation > Plugins.`;
+    const errorHelp = t("chat.sidebar.catalogDiscoveryHelp", { error: errorMessage });
     const sectionClass = [
       "sidebar-recent-sessions__group",
       "sidebar-recent-sessions__group--zone-coding",
@@ -180,6 +175,11 @@ export function renderSessionCatalogGroups(params: SessionCatalogGroupsParams) {
               title=${hasError ? errorHelp : nothing}
               @click=${() => params.onToggleSection(sectionId)}
             >
+              ${hasProviderBrandIcon(catalog.id)
+                ? renderProviderBrandIcon(catalog.id, {
+                    className: "sidebar-session-catalog-provider-icon",
+                  })
+                : nothing}
               <span class="sidebar-recent-sessions__label-text">${catalog.label}</span>
               <span class="sidebar-session-group-toggle__icon" aria-hidden="true"
                 >${collapsed ? icons.chevronRight : icons.chevronDown}</span
@@ -360,15 +360,28 @@ function renderCatalogSessionRow(
   const key = session.sessionKey ?? buildCatalogSessionKey(catalogKey);
   const label = session.name || session.threadId;
   const meta = formatSidebarTimestamp(timestamp);
-  const search = searchForSession(key);
-  const href = `${pathForRoute("chat", params.basePath)}${search}`;
+  const routeId = "chat";
+  const target = sessionNavigationTarget({
+    face: routeId,
+    sessionKey: key,
+    fallbackAgentId: params.newSessionAgentId,
+    basePath: params.basePath,
+    mainKey: params.mainKey,
+  });
+  const { href, options: navigation } = target;
   const active = params.routeSessionKey !== "" && key === params.routeSessionKey;
   const running = session.status === "active" || session.status === "running";
   const canOpenTerminal = session.canOpenTerminal === true && params.terminalAvailable;
   const openTerminal = () => params.onOpenTerminal(catalogKey);
   const openMenu = (x: number, y: number, trigger?: HTMLElement) =>
     params.onOpenMenu(
-      { key: catalogKey, search, canOpenTerminal: session.canOpenTerminal === true, meta },
+      {
+        key: catalogKey,
+        routeId,
+        navigation,
+        canOpenTerminal: session.canOpenTerminal === true,
+        meta,
+      },
       x,
       y,
       trigger,
@@ -400,7 +413,7 @@ function renderCatalogSessionRow(
           if (params.catalogOpenTarget === "terminal" && canOpenTerminal) {
             openTerminal();
           } else {
-            params.onNavigate?.("chat", { search });
+            params.onNavigate?.(routeId, navigation);
           }
         }}
       >

@@ -1978,7 +1978,7 @@
     "fast-glob": "3.3.3",
     "ipaddr.js": "2.4.0",
     "jscpd": "4.2.4",
-    "jsdom": "29.1.1",
+    "jsdom": "30.0.1",
     "lit": "3.3.3",
     "lit-analyzer": "2.0.3",
     "oxfmt": "0.60.0",

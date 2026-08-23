@@ -7,7 +7,11 @@ metadata:
   name: frack
   namespace: agents-shared
 spec:
-  entryPoints: [websecure]
+  # Cloudflare terminates TLS and the tunnel speaks plain HTTP to Traefik's
+  # `web` entrypoint; a websecure-only router, a `tls:` block (TLS-only
+  # routers on every entrypoint) or a cross-namespace middleware ref
+  # (allowCrossNamespace is off) each make Traefik drop the router -> 404.
+  entryPoints: [web]
   routes:
     - match: Host(`frack.leopaska.xyz`)
       kind: Rule
@@ -16,10 +20,7 @@ spec:
           namespace: agents-shared
           port: 18789
       middlewares:
-        - name: authelia
-          namespace: security
-  tls:
-    certResolver: letsencrypt-prod
+        - name: authelia   # agents-shared copy, homelab infrastructure/authelia-middleware.yaml
 
 # ServiceMonitor removed (homelab#47): this OpenClaw build exposes no
 # Prometheus /metrics endpoint (the gateway answers with the control-UI

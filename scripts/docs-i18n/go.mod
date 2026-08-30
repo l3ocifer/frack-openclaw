@@ -5,7 +5,8 @@ go 1.25.0
 toolchain go1.25.12
 
 require (
-	github.com/yuin/goldmark v1.8.4
+	github.com/yuin/goldmark v1.8.5
+	github.com/yuin/goldmark/v2 v2.0.0
 	golang.org/x/net v0.57.0
 	gopkg.in/yaml.v3 v3.0.1
 )

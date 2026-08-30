@@ -9,8 +9,8 @@
     "./runtime-api.js": "./dist/runtime-api.js"
   },
   "dependencies": {
-    "ws": "8.21.1",
-    "zod": "4.4.3"
+    "ws": "8.21.3",
+    "zod": "4.5.4"
   },
   "devDependencies": {
     "@openclaw/plugin-sdk": "workspace:*",

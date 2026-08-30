@@ -56,11 +56,11 @@
   },
   "dependencies": {
     "@openclaw/gateway-protocol": "workspace:*",
-    "ipaddr.js": "2.4.0",
-    "ws": "8.21.1"
+    "ipaddr.js": "2.5.0",
+    "ws": "8.21.3"
   },
   "engines": {
-    "node": ">=22.19.0"
+    "node": ">=22.23.2"
   },
   "publishConfig": {
     "access": "public"

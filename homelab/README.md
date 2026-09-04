@@ -75,6 +75,10 @@ Provided by `frack-secrets` SealedSecret in the cluster (sealed in
 See `homelab/config/openclaw.json` for the full list of what Frack
 references.
 
+Frack receives no Kubernetes Secret API access and cannot exec into Pods. See
+[`RBAC-HARDENING.md`](RBAC-HARDENING.md) for the trust boundary, policy tests,
+and broker-credential commissioning order.
+
 ## License
 
 OpenClaw upstream: see [LICENSE](../LICENSE) at repo root.

@@ -1,0 +1,35 @@
+name: homelab-rbac-policy
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "homelab/k8s/rbac.yaml"
+      - "homelab/scripts/test_rbac_policy.py"
+      - ".forgejo/workflows/homelab-rbac-policy.yml"
+  push:
+    branches: [main]
+    paths:
+      - "homelab/k8s/rbac.yaml"
+      - "homelab/scripts/test_rbac_policy.py"
+      - ".forgejo/workflows/homelab-rbac-policy.yml"
+  workflow_dispatch: {}
+
+jobs:
+  policy:
+    name: policy
+    runs-on: docker
+    steps:
+      - name: Verify least-privilege RBAC
+        env:
+          REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REGISTRY_INTERNAL: forgejo-http.forgejo.svc.cluster.local:3000
+        run: |
+          set -eu
+          apk add --no-cache git python3 py3-yaml
+          git init -q repo
+          git -C repo fetch -q --depth 1 \
+            "http://${GITHUB_ACTOR}:${REPO_TOKEN}@${REGISTRY_INTERNAL}/${GITHUB_REPOSITORY}.git" \
+            "${GITHUB_SHA}"
+          git -C repo checkout -q FETCH_HEAD
+          python3 repo/homelab/scripts/test_rbac_policy.py

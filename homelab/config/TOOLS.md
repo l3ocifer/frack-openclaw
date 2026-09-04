@@ -76,23 +76,28 @@ routes through the in-cluster LiteLLM proxy.
 
 ## kubectl
 
-I have a ServiceAccount `frack-ops` bound to a Role in each business
+I have a ServiceAccount `agents-shared/frack-ops` bound to a Role in each business
 app namespace (`potluck`, `blink-platform`, `ursulai`, `omnilemma`,
 `hyvapaska`, `githired`, `chimera`, `ae`, `lunasea`, `authorworks`,
 `trade`).
 
 Allowed verbs per resource:
 
-- `pods`, `events`, `deployments`, `replicasets`, `services`,
-  `configmaps` (no secrets), `ingresses`, `applications.argoproj.io`:
-  `get`, `list`, `watch`
-- `pods/log`, `pods/exec`: `get`, `create` (so I can shell in)
+- Business namespaces: `pods`, `events`, `services`, `configmaps`,
+  `endpoints`, `deployments`, `replicasets`, `statefulsets`, `ingresses`,
+  Traefik `ingressroutes`/`middlewares`: `get`, `list`, `watch`
+- Business namespaces: `pods/log`: `get`
 - `pods`: `delete` (rolling restart only — pods are cattle)
+- `agents-shared`: `get` only on the named `frack` Deployment
+- Cluster-wide: `applications.argoproj.io`, `applicationsets.argoproj.io`,
+  nodes, namespaces, and node/pod metrics: read-only
 
 NOT allowed:
 
-- Anything in `frick`, `sancho`, `agents-shared`, `kube-system`,
-  `argocd`, `cert-manager`, `databases`
+- Any Kubernetes Secret read/list/watch/create/patch in any namespace
+- `pods/exec` in any namespace; shell access requires a human operator identity
+- Sibling Pods, logs, Deployments, or ConfigMaps in `agents-shared`
+- Business-app mutation except deleting a Pod for a rolling restart
 - `delete` on `pvc`, `deployment`, `secret`, `configmap`, `service`,
   `ingress`, `namespace`, `application`
 - `kubectl apply` (deploys go through ArgoCD Image Updater +
@@ -102,21 +107,24 @@ Common ops:
 
 ```bash
 # Check business app health
-kubectl --as=system:serviceaccount:frack:frack-ops \
+kubectl --as=system:serviceaccount:agents-shared:frack-ops \
   -n potluck get pods,deploy,svc
 
 # Tail business app logs
-kubectl --as=system:serviceaccount:frack:frack-ops \
+kubectl --as=system:serviceaccount:agents-shared:frack-ops \
   -n ursulai logs -f deploy/ursulai
 
 # Roll the api-gateway pod (after image-updater hits)
-kubectl --as=system:serviceaccount:frack:frack-ops \
+kubectl --as=system:serviceaccount:agents-shared:frack-ops \
   -n potluck delete pod -l app=potluck-api-gateway
 
 # Cluster-wide read-only view
-kubectl --as=system:serviceaccount:frack:frack-ops \
+kubectl --as=system:serviceaccount:agents-shared:frack-ops \
   get applications -A
 ```
+
+RBAC policy tests and operator-only commissioning checks are documented in
+[`homelab/RBAC-HARDENING.md`](../RBAC-HARDENING.md).
 
 ## Postgres
 

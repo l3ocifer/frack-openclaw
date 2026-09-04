@@ -8,25 +8,27 @@ metadata:
   namespace: agents-shared
 
 ---
-# Frack's own namespace — full control (it's its own house).
+# Frack may inspect only its own Deployment in the shared agent namespace.
+#
+# This Role intentionally omits Secrets, Pods, pod logs/exec, ConfigMaps, and
+# mutation verbs. Broker-client credentials and sibling workloads share this
+# namespace; self-management authority here would cross principal boundaries.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: frack-self
+  name: frack-self-observer
   namespace: agents-shared
 rules:
-  - apiGroups: [""]
-    resources: ["pods", "pods/log", "pods/exec", "configmaps", "secrets", "events"]
-    verbs: ["get", "list", "watch", "create", "patch"]
   - apiGroups: ["apps"]
-    resources: ["deployments", "replicasets"]
-    verbs: ["get", "list", "watch", "patch"]
+    resources: ["deployments"]
+    resourceNames: ["frack"]
+    verbs: ["get"]
 
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: frack-self
+  name: frack-self-observer
   namespace: agents-shared
 subjects:
   - kind: ServiceAccount
@@ -35,7 +37,7 @@ subjects:
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: frack-self
+  name: frack-self-observer
 
 # ─────────────────────────────────────────────────────────────────────
 # Business app namespace bindings.
@@ -51,7 +53,7 @@ roleRef:
 # Frack's policy in every business namespace:
 #   • read everything except secrets
 #   • restart pods (delete on pods is rolling restart only)
-#   • shell into pods
+#   • no shell/exec access (pods can contain workload credentials)
 #   • NO delete on pvc/deployment/secret/configmap/service/ingress
 # ─────────────────────────────────────────────────────────────────────
 
@@ -68,10 +70,7 @@ rules:
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["pods/log"]
-    verbs: ["get", "list"]
-  - apiGroups: [""]
-    resources: ["pods/exec"]
-    verbs: ["create"]
+    verbs: ["get"]
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["delete"]
@@ -115,10 +114,7 @@ rules:
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["pods/log"]
-    verbs: ["get", "list"]
-  - apiGroups: [""]
-    resources: ["pods/exec"]
-    verbs: ["create"]
+    verbs: ["get"]
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["delete"]
@@ -162,10 +158,7 @@ rules:
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["pods/log"]
-    verbs: ["get", "list"]
-  - apiGroups: [""]
-    resources: ["pods/exec"]
-    verbs: ["create"]
+    verbs: ["get"]
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["delete"]
@@ -209,10 +202,7 @@ rules:
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["pods/log"]
-    verbs: ["get", "list"]
-  - apiGroups: [""]
-    resources: ["pods/exec"]
-    verbs: ["create"]
+    verbs: ["get"]
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["delete"]
@@ -256,10 +246,7 @@ rules:
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["pods/log"]
-    verbs: ["get", "list"]
-  - apiGroups: [""]
-    resources: ["pods/exec"]
-    verbs: ["create"]
+    verbs: ["get"]
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["delete"]
@@ -303,10 +290,7 @@ rules:
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["pods/log"]
-    verbs: ["get", "list"]
-  - apiGroups: [""]
-    resources: ["pods/exec"]
-    verbs: ["create"]
+    verbs: ["get"]
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["delete"]
@@ -350,10 +334,7 @@ rules:
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["pods/log"]
-    verbs: ["get", "list"]
-  - apiGroups: [""]
-    resources: ["pods/exec"]
-    verbs: ["create"]
+    verbs: ["get"]
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["delete"]
@@ -397,10 +378,7 @@ rules:
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["pods/log"]
-    verbs: ["get", "list"]
-  - apiGroups: [""]
-    resources: ["pods/exec"]
-    verbs: ["create"]
+    verbs: ["get"]
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["delete"]
@@ -444,10 +422,7 @@ rules:
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["pods/log"]
-    verbs: ["get", "list"]
-  - apiGroups: [""]
-    resources: ["pods/exec"]
-    verbs: ["create"]
+    verbs: ["get"]
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["delete"]
@@ -491,10 +466,7 @@ rules:
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["pods/log"]
-    verbs: ["get", "list"]
-  - apiGroups: [""]
-    resources: ["pods/exec"]
-    verbs: ["create"]
+    verbs: ["get"]
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["delete"]
@@ -538,10 +510,7 @@ rules:
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["pods/log"]
-    verbs: ["get", "list"]
-  - apiGroups: [""]
-    resources: ["pods/exec"]
-    verbs: ["create"]
+    verbs: ["get"]
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["delete"]

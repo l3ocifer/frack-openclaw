@@ -33,16 +33,24 @@ jobs:
         run: |
           set -eu
           apk add --no-cache git kubectl python3 py3-yaml
+          forgejo_auth="$(printf '%s:%s' "${GITHUB_ACTOR}" "${REPO_TOKEN}" | base64 | tr -d '\n')"
+          printf '::add-mask::%s\n' "${REPO_TOKEN}"
+          printf '::add-mask::%s\n' "${forgejo_auth}"
+
           git init -q repo
-          git -C repo fetch -q --depth 1 \
-            "http://${GITHUB_ACTOR}:${REPO_TOKEN}@${REGISTRY_INTERNAL}/${GITHUB_REPOSITORY}.git" \
+          git -C repo -c "http.extraHeader=Authorization: Basic ${forgejo_auth}" \
+            fetch -q --depth 1 \
+            "http://${REGISTRY_INTERNAL}/${GITHUB_REPOSITORY}.git" \
             "${GITHUB_SHA}"
           git -C repo checkout -q FETCH_HEAD
           python3 repo/homelab/scripts/test_rbac_policy.py
 
           git -C repo config submodule.homelab/shared.url \
             "http://${REGISTRY_INTERNAL}/leo/homelab.git"
-          git -C repo submodule update --init --depth 1 homelab/shared
+          git -C repo -c "http.extraHeader=Authorization: Basic ${forgejo_auth}" \
+            submodule update --init --depth 1 homelab/shared
+          unset forgejo_auth
+
           kubectl kustomize --load-restrictor=LoadRestrictionsNone \
             repo/homelab/k8s >/tmp/frack-rendered.yaml
           FRACK_RBAC_MANIFEST=/tmp/frack-rendered.yaml \

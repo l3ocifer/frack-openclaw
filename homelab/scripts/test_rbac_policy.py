@@ -15,6 +15,7 @@ Resource = dict[str, Any]
 Request = dict[str, str]
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RBAC_PATH = REPO_ROOT / "homelab" / "k8s" / "rbac.yaml"
+WORKFLOW_PATH = REPO_ROOT / ".forgejo" / "workflows" / "homelab-rbac-policy.yml"
 SERVICE_ACCOUNT = {
     "kind": "ServiceAccount",
     "name": "frack-ops",
@@ -219,6 +220,27 @@ class FrackRbacPolicyTest(unittest.TestCase):
                 {"subjects": [{"kind": "Group", "name": "system:unauthenticated"}]}
             )
         )
+
+    def test_ci_uses_ephemeral_authenticated_submodule_fetches(self) -> None:
+        workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+        self.assertNotIn("${REPO_TOKEN}@", workflow)
+        persisted_headers = [
+            line
+            for line in workflow.splitlines()
+            if "config http.extraHeader" in line and " -c " not in line
+        ]
+        self.assertEqual(persisted_headers, [])
+        self.assertNotIn("credential.helper", workflow)
+        self.assertNotIn("set -x", workflow)
+        self.assertGreaterEqual(
+            workflow.count(
+                '-c "http.extraHeader=Authorization: Basic ${forgejo_auth}"'
+            ),
+            2,
+        )
+        self.assertIn("printf '::add-mask::%s\\n' \"${forgejo_auth}\"", workflow)
+        self.assertIn("submodule update --init --depth 1 homelab/shared", workflow)
+        self.assertIn("unset forgejo_auth", workflow)
 
     def test_group_bindings_feed_the_effective_permission_model(self) -> None:
         role = fixture_role(

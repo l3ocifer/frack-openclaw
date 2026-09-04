@@ -41,6 +41,50 @@ BUSINESS_NAMESPACES = {
 }
 
 
+def fixture_role(
+    kind: str,
+    name: str,
+    resource: str,
+    verb: str,
+    namespace: str | None = None,
+) -> Resource:
+    """Build a minimal synthetic Role or ClusterRole for model self-tests."""
+    metadata = {"name": name}
+    if namespace:
+        metadata["namespace"] = namespace
+    return {
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": kind,
+        "metadata": metadata,
+        "rules": [{"apiGroups": [""], "resources": [resource], "verbs": [verb]}],
+    }
+
+
+def fixture_binding(
+    kind: str,
+    name: str,
+    subject: Resource,
+    role_kind: str,
+    role_name: str,
+    namespace: str | None = None,
+) -> Resource:
+    """Build a minimal synthetic binding for model self-tests."""
+    metadata = {"name": name}
+    if namespace:
+        metadata["namespace"] = namespace
+    return {
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": kind,
+        "metadata": metadata,
+        "subjects": [subject],
+        "roleRef": {
+            "apiGroup": "rbac.authorization.k8s.io",
+            "kind": role_kind,
+            "name": role_name,
+        },
+    }
+
+
 class FrackRbacPolicyTest(unittest.TestCase):
     """Exercise both structural and effective-permission invariants."""
 
@@ -177,63 +221,27 @@ class FrackRbacPolicyTest(unittest.TestCase):
         )
 
     def test_group_bindings_feed_the_effective_permission_model(self) -> None:
-        role = {
-            "apiVersion": "rbac.authorization.k8s.io/v1",
-            "kind": "Role",
-            "metadata": {
-                "name": "fixture-secret-reader",
-                "namespace": "agents-shared",
-            },
-            "rules": [
-                {
-                    "apiGroups": [""],
-                    "resources": ["secrets"],
-                    "verbs": ["get"],
-                }
-            ],
-        }
-        role_binding = {
-            "apiVersion": "rbac.authorization.k8s.io/v1",
-            "kind": "RoleBinding",
-            "metadata": {
-                "name": "fixture-serviceaccounts",
-                "namespace": "agents-shared",
-            },
-            "subjects": [
-                {
-                    "kind": "Group",
-                    "name": "system:serviceaccounts:agents-shared",
-                }
-            ],
-            "roleRef": {
-                "apiGroup": "rbac.authorization.k8s.io",
-                "kind": "Role",
-                "name": "fixture-secret-reader",
-            },
-        }
-        cluster_role = {
-            "apiVersion": "rbac.authorization.k8s.io/v1",
-            "kind": "ClusterRole",
-            "metadata": {"name": "fixture-exec"},
-            "rules": [
-                {
-                    "apiGroups": [""],
-                    "resources": ["pods/exec"],
-                    "verbs": ["create"],
-                }
-            ],
-        }
-        cluster_role_binding = {
-            "apiVersion": "rbac.authorization.k8s.io/v1",
-            "kind": "ClusterRoleBinding",
-            "metadata": {"name": "fixture-authenticated"},
-            "subjects": [{"kind": "Group", "name": "system:authenticated"}],
-            "roleRef": {
-                "apiGroup": "rbac.authorization.k8s.io",
-                "kind": "ClusterRole",
-                "name": "fixture-exec",
-            },
-        }
+        role = fixture_role(
+            "Role", "fixture-secret-reader", "secrets", "get", "agents-shared"
+        )
+        role_binding = fixture_binding(
+            "RoleBinding",
+            "fixture-serviceaccounts",
+            {"kind": "Group", "name": "system:serviceaccounts:agents-shared"},
+            "Role",
+            "fixture-secret-reader",
+            "agents-shared",
+        )
+        cluster_role = fixture_role(
+            "ClusterRole", "fixture-exec", "pods/exec", "create"
+        )
+        cluster_role_binding = fixture_binding(
+            "ClusterRoleBinding",
+            "fixture-authenticated",
+            {"kind": "Group", "name": "system:authenticated"},
+            "ClusterRole",
+            "fixture-exec",
+        )
 
         self.objects = [
             *self.objects,

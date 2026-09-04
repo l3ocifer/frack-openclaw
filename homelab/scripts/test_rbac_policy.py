@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import unittest
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,12 @@ SERVICE_ACCOUNT = {
     "kind": "ServiceAccount",
     "name": "frack-ops",
     "namespace": "agents-shared",
+}
+SERVICE_ACCOUNT_USER = "system:serviceaccount:agents-shared:frack-ops"
+SERVICE_ACCOUNT_GROUPS = {
+    "system:authenticated",
+    "system:serviceaccounts",
+    "system:serviceaccounts:agents-shared",
 }
 BUSINESS_NAMESPACES = {
     "ae",
@@ -40,7 +47,8 @@ class FrackRbacPolicyTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         """Load the exact multi-document manifest proposed for GitOps."""
-        with RBAC_PATH.open(encoding="utf-8") as manifest:
+        cls.manifest_path = Path(os.environ.get("FRACK_RBAC_MANIFEST", RBAC_PATH))
+        with cls.manifest_path.open(encoding="utf-8") as manifest:
             cls.objects = [item for item in yaml.safe_load_all(manifest) if item]
         cls.roles = {
             f"{item['metadata']['namespace']}/{item['metadata']['name']}": item
@@ -55,13 +63,24 @@ class FrackRbacPolicyTest(unittest.TestCase):
 
     @staticmethod
     def includes_subject(binding: Resource) -> bool:
-        """Return whether a binding grants the Frack service account."""
-        return any(
-            subject.get("kind") == SERVICE_ACCOUNT["kind"]
-            and subject.get("name") == SERVICE_ACCOUNT["name"]
-            and subject.get("namespace") == SERVICE_ACCOUNT["namespace"]
-            for subject in binding.get("subjects", [])
-        )
+        """Return whether a binding grants Frack through any standard identity."""
+        for subject in binding.get("subjects", []):
+            is_service_account = (
+                subject.get("kind") == SERVICE_ACCOUNT["kind"]
+                and subject.get("name") == SERVICE_ACCOUNT["name"]
+                and subject.get("namespace") == SERVICE_ACCOUNT["namespace"]
+            )
+            is_user = (
+                subject.get("kind") == "User"
+                and subject.get("name") == SERVICE_ACCOUNT_USER
+            )
+            is_group = (
+                subject.get("kind") == "Group"
+                and subject.get("name") in SERVICE_ACCOUNT_GROUPS
+            )
+            if is_service_account or is_user or is_group:
+                return True
+        return False
 
     def effective_rules(self, namespace: str) -> list[Resource]:
         """Resolve namespaced and cluster rules granted to Frack."""
@@ -73,10 +92,16 @@ class FrackRbacPolicyTest(unittest.TestCase):
                 or not self.includes_subject(binding)
             ):
                 continue
-            self.assertEqual(binding["roleRef"]["kind"], "Role")
-            key = f"{namespace}/{binding['roleRef']['name']}"
-            self.assertIn(key, self.roles)
-            rules.extend(self.roles[key].get("rules", []))
+            role_kind = binding["roleRef"]["kind"]
+            role_name = binding["roleRef"]["name"]
+            if role_kind == "Role":
+                key = f"{namespace}/{role_name}"
+                self.assertIn(key, self.roles)
+                rules.extend(self.roles[key].get("rules", []))
+            else:
+                self.assertEqual(role_kind, "ClusterRole")
+                self.assertIn(role_name, self.cluster_roles)
+                rules.extend(self.cluster_roles[role_name].get("rules", []))
 
         for binding in self.objects:
             if binding["kind"] != "ClusterRoleBinding" or not self.includes_subject(
@@ -132,6 +157,105 @@ class FrackRbacPolicyTest(unittest.TestCase):
         self.assertEqual(
             {item["metadata"]["namespace"] for item in business_roles},
             BUSINESS_NAMESPACES,
+        )
+
+    def test_standard_service_account_identities_are_modeled(self) -> None:
+        direct_subjects = [
+            SERVICE_ACCOUNT,
+            {"kind": "User", "name": SERVICE_ACCOUNT_USER},
+            *(
+                {"kind": "Group", "name": group}
+                for group in sorted(SERVICE_ACCOUNT_GROUPS)
+            ),
+        ]
+        for subject in direct_subjects:
+            self.assertTrue(self.includes_subject({"subjects": [subject]}), subject)
+        self.assertFalse(
+            self.includes_subject(
+                {"subjects": [{"kind": "Group", "name": "system:unauthenticated"}]}
+            )
+        )
+
+    def test_group_bindings_feed_the_effective_permission_model(self) -> None:
+        role = {
+            "apiVersion": "rbac.authorization.k8s.io/v1",
+            "kind": "Role",
+            "metadata": {
+                "name": "fixture-secret-reader",
+                "namespace": "agents-shared",
+            },
+            "rules": [
+                {
+                    "apiGroups": [""],
+                    "resources": ["secrets"],
+                    "verbs": ["get"],
+                }
+            ],
+        }
+        role_binding = {
+            "apiVersion": "rbac.authorization.k8s.io/v1",
+            "kind": "RoleBinding",
+            "metadata": {
+                "name": "fixture-serviceaccounts",
+                "namespace": "agents-shared",
+            },
+            "subjects": [
+                {
+                    "kind": "Group",
+                    "name": "system:serviceaccounts:agents-shared",
+                }
+            ],
+            "roleRef": {
+                "apiGroup": "rbac.authorization.k8s.io",
+                "kind": "Role",
+                "name": "fixture-secret-reader",
+            },
+        }
+        cluster_role = {
+            "apiVersion": "rbac.authorization.k8s.io/v1",
+            "kind": "ClusterRole",
+            "metadata": {"name": "fixture-exec"},
+            "rules": [
+                {
+                    "apiGroups": [""],
+                    "resources": ["pods/exec"],
+                    "verbs": ["create"],
+                }
+            ],
+        }
+        cluster_role_binding = {
+            "apiVersion": "rbac.authorization.k8s.io/v1",
+            "kind": "ClusterRoleBinding",
+            "metadata": {"name": "fixture-authenticated"},
+            "subjects": [{"kind": "Group", "name": "system:authenticated"}],
+            "roleRef": {
+                "apiGroup": "rbac.authorization.k8s.io",
+                "kind": "ClusterRole",
+                "name": "fixture-exec",
+            },
+        }
+
+        self.objects = [
+            *self.objects,
+            role,
+            role_binding,
+            cluster_role,
+            cluster_role_binding,
+        ]
+        self.roles = {**self.roles, "agents-shared/fixture-secret-reader": role}
+        self.cluster_roles = {**self.cluster_roles, "fixture-exec": cluster_role}
+
+        self.assert_allowed(
+            namespace="agents-shared",
+            resource="secrets",
+            resourceName="frick-subagent-client",
+            verb="get",
+        )
+        self.assert_allowed(
+            namespace="blink-platform",
+            resource="pods/exec",
+            resourceName="blink-platform-example",
+            verb="create",
         )
 
     def test_no_secret_exec_wildcard_or_unexpected_mutation_rules(self) -> None:

@@ -7,11 +7,11 @@ kind: Kustomization
 # homelab/config/SOUL.md.
 #
 # NOTE: This kustomization deliberately omits a top-level `namespace:`
-# directive. Frack's RBAC includes per-namespace Roles for ten business
+# directive. Frack's RBAC includes per-namespace Roles for eleven business
 # namespaces (potluck, blink-platform, ursulai, omnilemma, hyvapaska,
 # githired, chimera, ae, lunasea, authorworks, trade). A
 # `namespace: agents-shared` directive would rewrite every Role's
-# namespace to `agents-shared`, producing ten Roles with the same name
+# namespace to `agents-shared`, producing eleven Roles with the same name
 # in the same namespace — kustomize rejects that with an "ID conflict"
 # error.
 #

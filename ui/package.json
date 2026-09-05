@@ -41,12 +41,12 @@
   },
   "devDependencies": {
     "@types/markdown-it": "14.1.2",
-    "@vitest/browser": "4.1.10",
-    "@vitest/browser-playwright": "4.1.10",
+    "@vitest/browser": "5.0.0",
+    "@vitest/browser-playwright": "5.0.0",
     "jsdom": "29.1.1",
     "openclaw": "workspace:*",
     "playwright": "1.61.1",
     "vite": "8.1.5",
-    "vitest": "4.1.10"
+    "vitest": "5.0.0"
   }
 }

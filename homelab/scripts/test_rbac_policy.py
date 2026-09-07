@@ -231,9 +231,8 @@ class FrackRbacPolicyTest(unittest.TestCase):
         self.assertNotIn("--token", workflow)
         self.assertIn('auth_dir="$(mktemp -d)"', workflow)
         self.assertIn('chmod 0700 "${auth_dir}"', workflow)
-        self.assertIn(
-            'chmod 0600 "${auth_dir}/password" "${auth_dir}/askpass"', workflow
-        )
+        self.assertIn('chmod 0600 "${auth_dir}/password"', workflow)
+        self.assertIn('chmod 0700 "${auth_dir}/askpass"', workflow)
         self.assertIn("unset REPO_TOKEN", workflow)
         self.assertIn('export GIT_ASKPASS="${auth_dir}/askpass"', workflow)
         self.assertIn("export GIT_TERMINAL_PROMPT=0", workflow)

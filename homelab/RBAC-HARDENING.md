@@ -44,8 +44,12 @@ the standard `system:serviceaccounts`,
 proves named broker/client Secrets are denied, Secret list/watch is absent, pod
 exec is denied in shared and business namespaces, the shared namespace grant is
 resource-name scoped, and the intended read/log/restart operations remain
-allowed. CI repeats the test against the complete Kustomize render, including
-the pinned `homelab/shared` submodule.
+allowed. CI repeats the test against the complete Kustomize render. The shared
+submodule contributes only Markdown payloads to `frack-persona`, so CI stages
+deterministic placeholder Markdown for those inputs instead of granting the
+Frack repository a cross-repository credential. This still exercises every
+production resource and Kustomize transformer that can affect RBAC while
+keeping pull-request checks credential-free.
 
 ## Commissioning order
 
@@ -112,6 +116,7 @@ Keep Frack and all autonomous workers paused throughout the RBAC change.
    Investigate every enumerated binding before continuing. The committed policy
    test cannot see a binding owned by another live Argo application or created
    manually in the cluster.
+
 4. Audit the resolved Roles and ClusterRoles for Secret reads or pod exec into
    broker credential consumers. Cluster administrators and the explicitly
    trusted Frick/Vimes operator boundary remain outside this patch.

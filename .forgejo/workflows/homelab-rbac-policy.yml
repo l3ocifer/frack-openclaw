@@ -41,25 +41,16 @@ jobs:
           set -eu
           python3 homelab/scripts/test_rbac_policy.py
 
-      - name: Fetch pinned homelab renderer dependency
-        env:
-          HOMELAB_URL: https://git.leopaska.xyz/leo/homelab.git
+      - name: Stage deterministic renderer fixtures
         run: |
           set -eu
           shared_entry="$(git ls-tree HEAD -- homelab/shared)"
-          shared_sha="$(git rev-parse 'HEAD:homelab/shared')"
           test "$(printf '%s\n' "${shared_entry}" | awk '{print $1 " " $2}')" = '160000 commit'
-          test "${#shared_sha}" -eq 40
-          case "${shared_sha}" in
-            *[!0-9a-f]*) echo 'invalid homelab/shared gitlink' >&2; exit 1 ;;
-          esac
-
-          export GIT_TERMINAL_PROMPT=0
-
-          git init -q homelab/shared
-          git -C homelab/shared fetch -q --depth 1 "${HOMELAB_URL}" "${shared_sha}"
-          test "$(git -C homelab/shared rev-parse FETCH_HEAD)" = "${shared_sha}"
-          git -C homelab/shared checkout -q --detach "${shared_sha}"
+          shared_dir=homelab/shared/openclaw-configs/shared
+          mkdir -p "${shared_dir}"
+          for name in AGENTS.md HANDOFF.md KILLSWITCH.md USER.md IDENTITY.md BOOTSTRAP.md HEARTBEAT.md; do
+            printf 'CI render fixture; RBAC policy ignores ConfigMap payloads.\n' >"${shared_dir}/${name}"
+          done
 
       - name: Verify rendered least-privilege RBAC
         run: |

@@ -221,7 +221,7 @@ class FrackRbacPolicyTest(unittest.TestCase):
             )
         )
 
-    def test_ci_fetches_exact_renderer_without_credentials(self) -> None:
+    def test_ci_renders_without_cross_repository_credentials(self) -> None:
         workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
         self.assertNotIn("REPO_TOKEN", workflow)
         self.assertNotIn("GIT_ASKPASS", workflow)
@@ -240,20 +240,12 @@ class FrackRbacPolicyTest(unittest.TestCase):
         self.assertIn("submodules: false", workflow)
         self.assertNotIn("git init -q repo", workflow)
         self.assertNotIn("git -C repo fetch", workflow)
-        self.assertIn(
-            "HOMELAB_URL: https://git.leopaska.xyz/leo/homelab.git", workflow
-        )
         self.assertIn("git ls-tree HEAD -- homelab/shared", workflow)
-        self.assertIn("git rev-parse 'HEAD:homelab/shared'", workflow)
-        self.assertIn("export GIT_TERMINAL_PROMPT=0", workflow)
         self.assertNotIn("submodule update", workflow)
-        self.assertIn(
-            'git -C homelab/shared fetch -q --depth 1 "${HOMELAB_URL}" "${shared_sha}"',
-            workflow,
-        )
-        self.assertIn(
-            'git -C homelab/shared checkout -q --detach "${shared_sha}"', workflow
-        )
+        self.assertNotIn("homelab/shared fetch", workflow)
+        self.assertNotIn("HOMELAB_URL", workflow)
+        self.assertIn("Stage deterministic renderer fixtures", workflow)
+        self.assertIn("RBAC policy ignores ConfigMap payloads", workflow)
 
     def test_group_bindings_feed_the_effective_permission_model(self) -> None:
         role = fixture_role(

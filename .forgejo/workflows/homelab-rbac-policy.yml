@@ -26,13 +26,25 @@ jobs:
     name: policy
     runs-on: docker
     steps:
-      - name: Verify least-privilege RBAC
+      - name: Checkout exact revision without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          submodules: false
+
+      - name: Verify committed least-privilege RBAC
+        run: |
+          set -eu
+          apk add --no-cache git kubectl python3 py3-yaml
+          python3 homelab/scripts/test_rbac_policy.py
+
+      - name: Verify rendered least-privilege RBAC
         env:
           REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REGISTRY_INTERNAL: forgejo-http.forgejo.svc.cluster.local:3000
         run: |
           set -eu
-          apk add --no-cache git kubectl python3 py3-yaml
           printf '::add-mask::%s\n' "${REPO_TOKEN}"
 
           auth_dir="$(mktemp -d)"
@@ -58,19 +70,12 @@ jobs:
           export GIT_ASKPASS_PASSWORD_FILE="${auth_dir}/password"
           export GIT_TERMINAL_PROMPT=0
 
-          git init -q repo
-          git -C repo fetch -q --depth 1 \
-            "http://${REGISTRY_INTERNAL}/${GITHUB_REPOSITORY}.git" \
-            "${GITHUB_SHA}"
-          git -C repo checkout -q FETCH_HEAD
-          python3 repo/homelab/scripts/test_rbac_policy.py
-
-          git -C repo config submodule.homelab/shared.url \
+          git config submodule.homelab/shared.url \
             "http://${REGISTRY_INTERNAL}/leo/homelab.git"
-          git -C repo submodule update --init --depth 1 homelab/shared
+          git submodule update --init --depth 1 homelab/shared
           unset GIT_ASKPASS GIT_ASKPASS_USERNAME GIT_ASKPASS_PASSWORD_FILE
 
           kubectl kustomize --load-restrictor=LoadRestrictionsNone \
-            repo/homelab/k8s >/tmp/frack-rendered.yaml
+            homelab/k8s >/tmp/frack-rendered.yaml
           FRACK_RBAC_MANIFEST=/tmp/frack-rendered.yaml \
-            python3 repo/homelab/scripts/test_rbac_policy.py
+            python3 homelab/scripts/test_rbac_policy.py

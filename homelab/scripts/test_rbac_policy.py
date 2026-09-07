@@ -221,9 +221,11 @@ class FrackRbacPolicyTest(unittest.TestCase):
             )
         )
 
-    def test_ci_uses_ephemeral_authenticated_submodule_fetches(self) -> None:
+    def test_ci_fetches_exact_renderer_without_credentials(self) -> None:
         workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
-        self.assertNotIn("${REPO_TOKEN}@", workflow)
+        self.assertNotIn("REPO_TOKEN", workflow)
+        self.assertNotIn("GIT_ASKPASS", workflow)
+        self.assertNotIn("secrets.", workflow)
         self.assertNotIn("http.extraHeader", workflow)
         self.assertNotIn("Authorization: Basic", workflow)
         self.assertNotIn("credential.helper", workflow)
@@ -238,23 +240,12 @@ class FrackRbacPolicyTest(unittest.TestCase):
         self.assertIn("submodules: false", workflow)
         self.assertNotIn("git init -q repo", workflow)
         self.assertNotIn("git -C repo fetch", workflow)
-        self.assertIn("if: github.event_name != 'pull_request'", workflow)
         self.assertIn(
             "HOMELAB_URL: https://git.leopaska.xyz/leo/homelab.git", workflow
         )
         self.assertIn("git ls-tree HEAD -- homelab/shared", workflow)
         self.assertIn("git rev-parse 'HEAD:homelab/shared'", workflow)
-        self.assertIn(
-            'auth_dir="$(mktemp -d /dev/shm/frack-git-auth.XXXXXX)"', workflow
-        )
-        self.assertIn('chmod 0700 "${auth_dir}"', workflow)
-        self.assertIn('chmod 0600 "${auth_dir}/password"', workflow)
-        self.assertIn('chmod 0700 "${auth_dir}/askpass"', workflow)
-        self.assertIn("unset REPO_TOKEN", workflow)
-        self.assertIn('export GIT_ASKPASS="${auth_dir}/askpass"', workflow)
         self.assertIn("export GIT_TERMINAL_PROMPT=0", workflow)
-        self.assertIn('rm -rf -- "${auth_dir:?}"', workflow)
-        self.assertIn("cleanup_auth\n          trap - EXIT", workflow)
         self.assertNotIn("submodule update", workflow)
         self.assertIn(
             'git -C homelab/shared fetch -q --depth 1 "${HOMELAB_URL}" "${shared_sha}"',
@@ -262,10 +253,6 @@ class FrackRbacPolicyTest(unittest.TestCase):
         )
         self.assertIn(
             'git -C homelab/shared checkout -q --detach "${shared_sha}"', workflow
-        )
-        self.assertIn(
-            "unset GIT_ASKPASS GIT_ASKPASS_USERNAME GIT_ASKPASS_PASSWORD_FILE",
-            workflow,
         )
 
     def test_group_bindings_feed_the_effective_permission_model(self) -> None:

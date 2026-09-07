@@ -39,7 +39,7 @@ jobs:
           apk add --no-cache git kubectl python3 py3-yaml
           python3 homelab/scripts/test_rbac_policy.py
 
-      - name: Verify rendered least-privilege RBAC
+      - name: Fetch pinned homelab renderer dependency
         env:
           REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REGISTRY_INTERNAL: forgejo-http.forgejo.svc.cluster.local:3000
@@ -73,8 +73,13 @@ jobs:
           git config submodule.homelab/shared.url \
             "http://${REGISTRY_INTERNAL}/leo/homelab.git"
           git submodule update --init --depth 1 homelab/shared
+          cleanup_auth
+          trap - EXIT
           unset GIT_ASKPASS GIT_ASKPASS_USERNAME GIT_ASKPASS_PASSWORD_FILE
 
+      - name: Verify rendered least-privilege RBAC
+        run: |
+          set -eu
           kubectl kustomize --load-restrictor=LoadRestrictionsNone \
             homelab/k8s >/tmp/frack-rendered.yaml
           FRACK_RBAC_MANIFEST=/tmp/frack-rendered.yaml \

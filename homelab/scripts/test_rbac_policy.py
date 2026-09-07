@@ -242,6 +242,7 @@ class FrackRbacPolicyTest(unittest.TestCase):
         self.assertIn('export GIT_ASKPASS="${auth_dir}/askpass"', workflow)
         self.assertIn("export GIT_TERMINAL_PROMPT=0", workflow)
         self.assertIn('rm -rf -- "${auth_dir:?}"', workflow)
+        self.assertIn("cleanup_auth\n          trap - EXIT", workflow)
         self.assertIn("submodule update --init --depth 1 homelab/shared", workflow)
         self.assertIn(
             "unset GIT_ASKPASS GIT_ASKPASS_USERNAME GIT_ASKPASS_PASSWORD_FILE",

@@ -33,13 +33,32 @@ jobs:
         run: |
           set -eu
           apk add --no-cache git kubectl python3 py3-yaml
-          forgejo_auth="$(printf '%s:%s' "${GITHUB_ACTOR}" "${REPO_TOKEN}" | base64 | tr -d '\n')"
           printf '::add-mask::%s\n' "${REPO_TOKEN}"
-          printf '::add-mask::%s\n' "${forgejo_auth}"
+
+          auth_dir="$(mktemp -d)"
+          chmod 0700 "${auth_dir}"
+          umask 077
+          printf '%s' "${REPO_TOKEN}" >"${auth_dir}/password"
+          unset REPO_TOKEN
+          printf '%s\n' \
+            '#!/bin/sh' \
+            'case "$1" in' \
+            '  *Username*) printf "%s\n" "${GIT_ASKPASS_USERNAME:?}" ;;' \
+            '  *Password*) exec cat "${GIT_ASKPASS_PASSWORD_FILE:?}" ;;' \
+            '  *) exit 1 ;;' \
+            'esac' >"${auth_dir}/askpass"
+          chmod 0600 "${auth_dir}/password" "${auth_dir}/askpass"
+          cleanup_auth() {
+            rm -rf -- "${auth_dir:?}"
+          }
+          trap cleanup_auth EXIT
+          export GIT_ASKPASS="${auth_dir}/askpass"
+          export GIT_ASKPASS_USERNAME="${GITHUB_ACTOR}"
+          export GIT_ASKPASS_PASSWORD_FILE="${auth_dir}/password"
+          export GIT_TERMINAL_PROMPT=0
 
           git init -q repo
-          git -C repo -c "http.extraHeader=Authorization: Basic ${forgejo_auth}" \
-            fetch -q --depth 1 \
+          git -C repo fetch -q --depth 1 \
             "http://${REGISTRY_INTERNAL}/${GITHUB_REPOSITORY}.git" \
             "${GITHUB_SHA}"
           git -C repo checkout -q FETCH_HEAD
@@ -47,9 +66,8 @@ jobs:
 
           git -C repo config submodule.homelab/shared.url \
             "http://${REGISTRY_INTERNAL}/leo/homelab.git"
-          git -C repo -c "http.extraHeader=Authorization: Basic ${forgejo_auth}" \
-            submodule update --init --depth 1 homelab/shared
-          unset forgejo_auth
+          git -C repo submodule update --init --depth 1 homelab/shared
+          unset GIT_ASKPASS GIT_ASKPASS_USERNAME GIT_ASKPASS_PASSWORD_FILE
 
           kubectl kustomize --load-restrictor=LoadRestrictionsNone \
             repo/homelab/k8s >/tmp/frack-rendered.yaml

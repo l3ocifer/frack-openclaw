@@ -129,7 +129,7 @@ const REQUIRED_METRIC_NAMES = ["openclaw.harness.duration_ms"] as const;
 const DIRECT_RUN_ID = "qa-otel-direct-run";
 const DIRECT_CALL_ID = "qa-otel-direct-call";
 const DIRECT_ERROR_MESSAGE = "QA OTEL provider stream failed";
-const DIRECT_ERROR_SECRET = "sk-1234567890abcdef";
+const DIRECT_ERROR_SECRET = "sk-1234567890abcdef"; // gitleaks:allow
 const DISALLOWED_ATTRIBUTE_KEYS = new Set([
   "openclaw.runId",
   "openclaw.chatId",

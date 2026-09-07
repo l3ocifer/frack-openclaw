@@ -1851,7 +1851,7 @@ mod tests {
             session_key: "agent:work:main".to_string(),
             agent_id: None,
             message: "hello".to_string(),
-            idempotency_key: "idempotency-1".to_string(),
+            idempotency_key: "idempotency-1".to_string(), // gitleaks:allow
         };
         assert_eq!(
             request_frame(
@@ -1866,7 +1866,7 @@ mod tests {
                 "params": {
                     "sessionKey": "agent:work:main",
                     "message": "hello",
-                    "idempotencyKey": "idempotency-1"
+                    "idempotencyKey": "idempotency-1" // gitleaks:allow
                 }
             })
         );

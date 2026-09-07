@@ -2914,7 +2914,7 @@ class AutoreviewHardeningTests(unittest.TestCase):
             + literal_value
             + '"]'
         )
-        quoted_secret_key = "N7xQ2mP9vK4r" + "T8wZ"
+        quoted_secret_key = "N7xQ2mP9vK4r" + "T8wZ"  # gitleaks:allow
         typescript_store_literal = (
             "const pass"
             + 'word = attemptAuthProfileStore["'
@@ -3396,8 +3396,12 @@ class AutoreviewHardeningTests(unittest.TestCase):
 
     def test_secret_detector_handles_username_only_uri_credentials(self) -> None:
         literal_username = "real-hardcoded-" + "secret"
-        hex_credential = "0123456789abcdef" + "0123456789abcdef01234567"
-        uuid_credential = "550e8400-e29b-41d4-a716-" + "446655440000"
+        hex_credential = (  # gitleaks:allow
+            "0123456789abcdef" + "0123456789abcdef01234567"
+        )
+        uuid_credential = (  # gitleaks:allow
+            "550e8400-e29b-41d4-a716-" + "446655440000"
+        )
 
         for content in (
             "https://actual-production-"

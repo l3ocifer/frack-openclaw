@@ -798,7 +798,7 @@ describe("gateway agent handler", () => {
         message: "hi",
         agentId: "main",
         sessionKey: "agent:main:subagent:test-broader",
-        idempotencyKey: "test-5369-broader",
+        idempotencyKey: "test-5369-broader", // gitleaks:allow
       },
       { reqId: "broader-1" },
     );
@@ -850,7 +850,7 @@ describe("gateway agent handler", () => {
         channel: "telegram",
         to: "99999",
         deliver: true,
-        idempotencyKey: "test-5369-policy",
+        idempotencyKey: "test-5369-policy", // gitleaks:allow
       },
       { reqId: "policy-1", respond },
     );
@@ -947,7 +947,7 @@ describe("gateway agent handler", () => {
         message: "hi",
         agentId: "main",
         sessionKey: "agent:main:subagent:test-rotation",
-        idempotencyKey: "test-5369-rotation",
+        idempotencyKey: "test-5369-rotation", // gitleaks:allow
       },
       { reqId: "rotation-1" },
     );

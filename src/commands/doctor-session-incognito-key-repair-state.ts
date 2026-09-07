@@ -13,7 +13,7 @@ import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths
 export type ReservedKeyRename = { from: string; to: string };
 
 const REPAIR_JOURNAL_SCOPE = "doctor-session-key-migration";
-const REPAIR_JOURNAL_KEY = "reserved-incognito-v1";
+const REPAIR_JOURNAL_KEY = "reserved-incognito-v1"; // gitleaks:allow
 
 type SharedStateSessionKeyColumn = {
   column: string;

@@ -19,7 +19,7 @@ scenario:
         defaultRoomKey: main
         rooms:
           - encrypted: true
-            key: e2ee-verification-dm
+            key: e2ee-verification-dm # gitleaks:allow
             kind: dm
             members:
               - driver

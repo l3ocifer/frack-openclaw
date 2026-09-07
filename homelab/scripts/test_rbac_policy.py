@@ -224,23 +224,25 @@ class FrackRbacPolicyTest(unittest.TestCase):
     def test_ci_uses_ephemeral_authenticated_submodule_fetches(self) -> None:
         workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
         self.assertNotIn("${REPO_TOKEN}@", workflow)
-        persisted_headers = [
-            line
-            for line in workflow.splitlines()
-            if "config http.extraHeader" in line and " -c " not in line
-        ]
-        self.assertEqual(persisted_headers, [])
+        self.assertNotIn("http.extraHeader", workflow)
+        self.assertNotIn("Authorization: Basic", workflow)
         self.assertNotIn("credential.helper", workflow)
         self.assertNotIn("set -x", workflow)
-        self.assertGreaterEqual(
-            workflow.count(
-                '-c "http.extraHeader=Authorization: Basic ${forgejo_auth}"'
-            ),
-            2,
+        self.assertNotIn("--token", workflow)
+        self.assertIn('auth_dir="$(mktemp -d)"', workflow)
+        self.assertIn('chmod 0700 "${auth_dir}"', workflow)
+        self.assertIn(
+            'chmod 0600 "${auth_dir}/password" "${auth_dir}/askpass"', workflow
         )
-        self.assertIn("printf '::add-mask::%s\\n' \"${forgejo_auth}\"", workflow)
+        self.assertIn("unset REPO_TOKEN", workflow)
+        self.assertIn('export GIT_ASKPASS="${auth_dir}/askpass"', workflow)
+        self.assertIn("export GIT_TERMINAL_PROMPT=0", workflow)
+        self.assertIn('rm -rf -- "${auth_dir:?}"', workflow)
         self.assertIn("submodule update --init --depth 1 homelab/shared", workflow)
-        self.assertIn("unset forgejo_auth", workflow)
+        self.assertIn(
+            "unset GIT_ASKPASS GIT_ASKPASS_USERNAME GIT_ASKPASS_PASSWORD_FILE",
+            workflow,
+        )
 
     def test_group_bindings_feed_the_effective_permission_model(self) -> None:
         role = fixture_role(

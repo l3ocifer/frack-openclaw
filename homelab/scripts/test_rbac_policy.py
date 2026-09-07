@@ -230,6 +230,10 @@ class FrackRbacPolicyTest(unittest.TestCase):
         self.assertNotIn("set -x", workflow)
         self.assertNotIn("--token", workflow)
         self.assertIn("uses: actions/checkout@v4", workflow)
+        self.assertLess(
+            workflow.index("apk add --no-cache git kubectl nodejs python3 py3-yaml"),
+            workflow.index("uses: actions/checkout@v4"),
+        )
         self.assertIn("persist-credentials: false", workflow)
         self.assertIn("submodules: false", workflow)
         self.assertNotIn("git init -q repo", workflow)

@@ -26,6 +26,9 @@ jobs:
     name: policy
     runs-on: docker
     steps:
+      - name: Bootstrap checkout and policy runtimes
+        run: apk add --no-cache git kubectl nodejs python3 py3-yaml
+
       - name: Checkout exact revision without persisted credentials
         uses: actions/checkout@v4
         with:
@@ -36,7 +39,6 @@ jobs:
       - name: Verify committed least-privilege RBAC
         run: |
           set -eu
-          apk add --no-cache git kubectl python3 py3-yaml
           python3 homelab/scripts/test_rbac_policy.py
 
       - name: Fetch pinned homelab renderer dependency

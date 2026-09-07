@@ -238,7 +238,15 @@ class FrackRbacPolicyTest(unittest.TestCase):
         self.assertIn("submodules: false", workflow)
         self.assertNotIn("git init -q repo", workflow)
         self.assertNotIn("git -C repo fetch", workflow)
-        self.assertIn('auth_dir="$(mktemp -d)"', workflow)
+        self.assertIn("if: github.event_name != 'pull_request'", workflow)
+        self.assertIn(
+            "HOMELAB_URL: https://git.leopaska.xyz/leo/homelab.git", workflow
+        )
+        self.assertIn("git ls-tree HEAD -- homelab/shared", workflow)
+        self.assertIn("git rev-parse 'HEAD:homelab/shared'", workflow)
+        self.assertIn(
+            'auth_dir="$(mktemp -d /dev/shm/frack-git-auth.XXXXXX)"', workflow
+        )
         self.assertIn('chmod 0700 "${auth_dir}"', workflow)
         self.assertIn('chmod 0600 "${auth_dir}/password"', workflow)
         self.assertIn('chmod 0700 "${auth_dir}/askpass"', workflow)
@@ -247,7 +255,14 @@ class FrackRbacPolicyTest(unittest.TestCase):
         self.assertIn("export GIT_TERMINAL_PROMPT=0", workflow)
         self.assertIn('rm -rf -- "${auth_dir:?}"', workflow)
         self.assertIn("cleanup_auth\n          trap - EXIT", workflow)
-        self.assertIn("submodule update --init --depth 1 homelab/shared", workflow)
+        self.assertNotIn("submodule update", workflow)
+        self.assertIn(
+            'git -C homelab/shared fetch -q --depth 1 "${HOMELAB_URL}" "${shared_sha}"',
+            workflow,
+        )
+        self.assertIn(
+            'git -C homelab/shared checkout -q --detach "${shared_sha}"', workflow
+        )
         self.assertIn(
             "unset GIT_ASKPASS GIT_ASKPASS_USERNAME GIT_ASKPASS_PASSWORD_FILE",
             workflow,

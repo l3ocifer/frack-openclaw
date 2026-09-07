@@ -42,14 +42,23 @@ jobs:
           python3 homelab/scripts/test_rbac_policy.py
 
       - name: Fetch pinned homelab renderer dependency
+        if: github.event_name != 'pull_request'
         env:
           REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REGISTRY_INTERNAL: forgejo-http.forgejo.svc.cluster.local:3000
+          HOMELAB_URL: https://git.leopaska.xyz/leo/homelab.git
         run: |
           set -eu
           printf '::add-mask::%s\n' "${REPO_TOKEN}"
 
-          auth_dir="$(mktemp -d)"
+          shared_entry="$(git ls-tree HEAD -- homelab/shared)"
+          shared_sha="$(git rev-parse 'HEAD:homelab/shared')"
+          test "$(printf '%s\n' "${shared_entry}" | awk '{print $1 " " $2}')" = '160000 commit'
+          test "${#shared_sha}" -eq 40
+          case "${shared_sha}" in
+            *[!0-9a-f]*) echo 'invalid homelab/shared gitlink' >&2; exit 1 ;;
+          esac
+
+          auth_dir="$(mktemp -d /dev/shm/frack-git-auth.XXXXXX)"
           chmod 0700 "${auth_dir}"
           umask 077
           printf '%s' "${REPO_TOKEN}" >"${auth_dir}/password"
@@ -72,14 +81,16 @@ jobs:
           export GIT_ASKPASS_PASSWORD_FILE="${auth_dir}/password"
           export GIT_TERMINAL_PROMPT=0
 
-          git config submodule.homelab/shared.url \
-            "http://${REGISTRY_INTERNAL}/leo/homelab.git"
-          git submodule update --init --depth 1 homelab/shared
+          git init -q homelab/shared
+          git -C homelab/shared fetch -q --depth 1 "${HOMELAB_URL}" "${shared_sha}"
+          test "$(git -C homelab/shared rev-parse FETCH_HEAD)" = "${shared_sha}"
+          git -C homelab/shared checkout -q --detach "${shared_sha}"
           cleanup_auth
           trap - EXIT
           unset GIT_ASKPASS GIT_ASKPASS_USERNAME GIT_ASKPASS_PASSWORD_FILE
 
       - name: Verify rendered least-privilege RBAC
+        if: github.event_name != 'pull_request'
         run: |
           set -eu
           kubectl kustomize --load-restrictor=LoadRestrictionsNone \

@@ -178,13 +178,21 @@ Routed via LiteLLM at `http://litellm.inference.svc.cluster.local:4000/v1`
 |---|---|---|
 | `chat` | Fleet default — conversational + most agentic work | vllm-chat on thebeast (RTX 4090): QuantTrio Qwen3.5-27B-AWQ-INT4, ~80 tok/s, 20 K input ctx |
 | `long` | Auto-fallback when context exceeds 20 K (multi-file diffs, long sessions) | vllm-long on alef (RTX 3090): Qwen3.5 9B AWQ + DeltaNet, 262 K native ctx |
-| `frontier` | Opt-in only — high-stakes deep dives where quality >> latency | llamacpp-blade-frontier: unsloth Qwen3-Coder 480B-A35B GGUF Q4_K_M on dual Xeon E5-2667 v2, CPU-only, ~3-5 tok/s, 65 K ctx |
+| `agent-quality` | Opt-in only — high-stakes deep dives where quality >> latency (was `frontier`) | CheaperInference GLM-5.3 via LiteLLM, thinking on |
 | `embed` | Embeddings for memory | tei-embed |
 | `rerank` | Hybrid search rerank | tei-rerank |
 
 There is no per-host Ollama in the fleet — everything routes through
 the in-cluster LiteLLM proxy. If LiteLLM is unhealthy the whole
 inference plane is down and Frick wakes (it's a P0).
+
+**2026-09-12 paradigm note:** this agent's LiteLLM key is scoped to
+exactly `chat`, `agent`, `agent-fast`, `agent-quality`, `aux`, `long`,
+`code`, `embed`, `rerank`, `transcribe`. `frontier`, `auto`, `codex-*`,
+`gpt-5.5`, and direct Claude/OpenAI API keys are no longer available to
+agents — those subscriptions (Fable/Astra/Sol) now orchestrate only,
+not agent fallbacks. `agent-quality` is the paid backstop rung when
+local quality isn't enough (GLM-5.3, opt-in, was `frontier` above).
 
 ## My Relationship with Frick and Sancho
 

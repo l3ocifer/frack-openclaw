@@ -14,10 +14,17 @@
       // harness — which falls back to `openai/gpt-5.5` for skill creation,
       // commit-message synthesis, etc. when the agentRuntime is left
       // unspecified — routes through the same LiteLLM gateway as the
-      // main agent. The matching `gpt-5.5 -> chat` alias lives in
-      // ~/git/homelab/argocd/apps/_inference/40-litellm-config.yaml
-      // (model_group_alias). Without this override the embedded run
-      // hits api.openai.com directly with our LITELLM_API_KEY -> 401.
+      // main agent. Without this override the embedded run hits
+      // api.openai.com directly with our LITELLM_API_KEY -> 401.
+      //
+      // 2026-09-12 paradigm: the `gpt-5.5 -> chat` model_group_alias was
+      // removed from the cluster LiteLLM config 2026-08-22 (real `gpt-*`
+      // model names now route to REAL OpenAI there, not vllm-chat) and
+      // `gpt-5.5` is not in this agent's LiteLLM key allowlist at all.
+      // The local catalog id below is now literally `chat` so the
+      // embedded-harness's implicit default resolves straight to the
+      // fleet default model, matching the homelab-main guidance
+      // ("OpenClaw codex-provider should point at chat directly").
       openai: {
         baseUrl: "http://litellm.inference.svc.cluster.local:4000/v1",
         apiKey: { source: "env", provider: "default", id: "OPENAI_API_KEY" },
@@ -29,8 +36,10 @@
         request: { allowPrivateNetwork: true },
         models: [
           {
-            id: "gpt-5.5",
-            name: "Embedded harness fallback — alias to LiteLLM chat",
+            // 2026-09-12 paradigm: was id "gpt-5.5" (removed LiteLLM alias,
+            // now routes to real OpenAI there). Points directly at `chat`.
+            id: "chat",
+            name: "Embedded harness fallback — LiteLLM chat (vllm-chat / Qwen3.6-27B AWQ-INT4)",
             reasoning: false,
             input: ["text"],
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -81,8 +90,13 @@
             maxTokens: 8192,
           },
           {
-            id: "frontier",
-            name: "Frontier (Qwen3-Coder 480B MoE on blade, slow / opt-in)",
+            // 2026-09-12 paradigm: was id "frontier" (llamacpp-blade Qwen3-Coder
+            // 480B). `frontier` is no longer in this agent's LiteLLM key
+            // allowlist -- SOTA/frontier subscriptions now orchestrate only.
+            // Points at `agent-quality` (CheaperInference GLM-5.3, thinking on,
+            // the "when it must be smarter" paid backstop rung) via LiteLLM.
+            id: "agent-quality",
+            name: "Frontier (now GLM-5.3 via LiteLLM agent-quality, opt-in)",
             reasoning: true,
             input: ["text"],
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },

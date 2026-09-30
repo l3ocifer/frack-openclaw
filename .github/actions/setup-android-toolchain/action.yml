@@ -16,7 +16,7 @@ runs:
           apps/android/gradle/libs.versions.toml
 
     - name: Cache Android SDK
-      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: ~/.android-sdk
         key: ${{ runner.os }}-android-sdk-v1-cmdline-14742923-platform-37.0-build-tools-36.0.0

@@ -148,7 +148,7 @@ runs:
 
     - name: Restore and save Vitest transform cache
       if: inputs.vitest-fs-cache == 'true' && inputs.save-vitest-fs-cache == 'true' && runner.os != 'Windows'
-      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: /var/tmp/openclaw-vitest-fs-cache
         # Blacksmith transparently accelerates the upstream Actions cache API.
@@ -160,7 +160,7 @@ runs:
 
     - name: Restore Vitest transform cache
       if: inputs.vitest-fs-cache == 'true' && inputs.save-vitest-fs-cache != 'true' && runner.os != 'Windows'
-      uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+      uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: /var/tmp/openclaw-vitest-fs-cache
         key: ${{ github.repository }}-vitest-fs-v3-protected-${{ runner.os }}-${{ runner.arch }}-node-${{ inputs.node-version }}-${{ hashFiles('pnpm-lock.yaml', 'pnpm-workspace.yaml', '**/package.json', '**/tsconfig*.json', 'vitest.config.*', 'test/vitest/**', '!**/node_modules/**') }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -211,7 +211,7 @@ runs:
 
     - name: Restore and save Node compile cache
       if: inputs.node-compile-cache == 'true' && inputs.save-node-compile-cache == 'true' && runner.os != 'Windows'
-      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: /var/tmp/openclaw-node-compile-cache
         key: ${{ github.repository }}-node-compile-v3-${{ inputs.node-compile-cache-scope }}-protected-${{ runner.os }}-${{ runner.arch }}-node-${{ inputs.node-version }}-${{ steps.node-compile-cache-epoch.outputs.value }}
@@ -220,7 +220,7 @@ runs:
 
     - name: Restore Node compile cache
       if: inputs.node-compile-cache == 'true' && inputs.save-node-compile-cache != 'true' && runner.os != 'Windows'
-      uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+      uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: /var/tmp/openclaw-node-compile-cache
         key: ${{ github.repository }}-node-compile-v3-${{ inputs.node-compile-cache-scope }}-protected-${{ runner.os }}-${{ runner.arch }}-node-${{ inputs.node-version }}-${{ steps.node-compile-cache-epoch.outputs.value }}
@@ -477,7 +477,7 @@ runs:
 
     - name: Restore and save build-all cache
       if: inputs.build-all-cache-scope != ''
-      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: .artifacts/build-all-cache
         # Exact keys deduplicate concurrent jobs. Coarse restore supplies the
@@ -488,7 +488,7 @@ runs:
 
     - name: Save pnpm store cache
       if: ${{ inputs.install-deps == 'true' && inputs.use-actions-cache == 'true' && inputs.save-actions-cache == 'true' && runner.os != 'Windows' && steps.setup-pnpm.outputs.store-cache-hit != 'true' }}
-      uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+      uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: ${{ steps.setup-pnpm.outputs.store-path }}
         key: ${{ steps.setup-pnpm.outputs.store-cache-primary-key }}
